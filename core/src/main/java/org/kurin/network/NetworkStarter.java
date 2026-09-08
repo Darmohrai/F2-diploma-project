@@ -22,7 +22,7 @@ public class NetworkStarter {
 
     public void shutdown() {
         server.shutdown();
-        context.getSharedWorkerGroup().shutdownGracefully();
+        context.shutdown();
     }
 
     public KurinNetworkClient getClient() {

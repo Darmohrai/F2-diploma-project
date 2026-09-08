@@ -2,6 +2,8 @@ package org.kurin.network.context;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.util.HashedWheelTimer;
+import io.netty.util.Timer;
 import org.kurin.network.client.ConnectionManager;
 import org.kurin.network.client.KurinNetworkClient;
 import org.kurin.network.client.NettyClient;
@@ -20,6 +22,8 @@ public class NetworkContext {
     private final EventLoopGroup sharedWorkerGroup;
     private final KurinNetworkClient client;
 
+    private final Timer timer;
+
     public NetworkContext(MessageDispatcher dispatcher, NetworkConfig networkConfig) {
         this.networkConfig = networkConfig;
 
@@ -29,9 +33,16 @@ public class NetworkContext {
 
         this.sharedWorkerGroup = new NioEventLoopGroup(networkConfig.getWorkerThreads());
 
+        this.timer = new HashedWheelTimer();
+
         NettyClient nettyClient = new NettyClient(this, this.sharedWorkerGroup);
         ConnectionManager connectionManager = new ConnectionManager(nettyClient);
-        this.client = new KurinNetworkClient(connectionManager, this.tracker, networkConfig.getRequestTimeoutSeconds());
+        this.client = new KurinNetworkClient(connectionManager, this.tracker, this.timer, networkConfig.getRequestTimeoutSeconds());
+    }
+
+    public void shutdown() {
+        timer.stop();
+        sharedWorkerGroup.shutdownGracefully();
     }
 
     public NetworkConfig getNetworkConfig() {
@@ -57,4 +68,9 @@ public class NetworkContext {
     public KurinNetworkClient getClient() {
         return client;
     }
+
+    public Timer getTimer() {
+        return timer;
+    }
+
 }

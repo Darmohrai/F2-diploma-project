@@ -2,6 +2,8 @@ package org.kurin.network.dispatcher;
 
 import org.kurin.network.dto.ClusterMessage;
 
+import java.util.concurrent.CompletableFuture;
+
 public interface MessageDispatcher {
-    Object dispatch(ClusterMessage request);
+    CompletableFuture<Object> dispatchAsync(ClusterMessage request);
 }

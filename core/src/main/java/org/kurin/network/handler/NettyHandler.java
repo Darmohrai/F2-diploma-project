@@ -2,6 +2,7 @@ package org.kurin.network.handler;
 
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.timeout.IdleStateEvent;
 import org.kurin.network.dispatcher.MessageDispatcher;
 import org.kurin.network.dto.ClusterMessage;
 import org.kurin.network.model.MessageType;
@@ -22,20 +23,34 @@ public class NettyHandler extends SimpleChannelInboundHandler<ClusterMessage> {
     }
 
     @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+        if (evt instanceof IdleStateEvent) {
+            log.warn("Connection idle detected. Closing channel {}", ctx.channel().remoteAddress());
+            ctx.close();
+        }
+    }
+
+    @Override
     protected void channelRead0(ChannelHandlerContext ctx, ClusterMessage msg) {
         if (msg.getType() == MessageType.RESPONSE) {
             tracker.completeRequest(msg.getCorrelationId(), msg);
         } else if (msg.getType() == MessageType.REQUEST) {
-            Object resultPayload = dispatcher.dispatch(msg);
+            dispatcher.dispatchAsync(msg).whenComplete((resultPayload, throwable) -> {
+                if (throwable != null) {
+                    log.error("Error executing business logic for request {}: {}",
+                            msg.getCorrelationId(), throwable.getMessage());
+                    return;
+                }
+                if (resultPayload != null) {
+                    ClusterMessage response = new ClusterMessage(
+                            MessageType.RESPONSE,
+                            msg.getCorrelationId(),
+                            resultPayload
+                    );
+                    ctx.writeAndFlush(response);
+                }
+            });
 
-            if (resultPayload != null) {
-                ClusterMessage response = new ClusterMessage(
-                        MessageType.RESPONSE,
-                        msg.getCorrelationId(),
-                        resultPayload
-                );
-                ctx.writeAndFlush(response);
-            }
         } else if (msg.getType() == MessageType.PING) {
             ctx.writeAndFlush(new ClusterMessage(MessageType.RESPONSE, msg.getCorrelationId(), "PONG"));
         } else {

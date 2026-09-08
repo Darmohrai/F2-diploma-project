@@ -1,5 +1,7 @@
 package org.kurin.network.client;
 
+import io.netty.util.Timeout;
+import io.netty.util.Timer;
 import org.kurin.network.dto.ClusterMessage;
 import org.kurin.network.model.MessageType;
 import org.kurin.network.model.NodeAddress;
@@ -9,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class KurinNetworkClient {
 
@@ -18,10 +21,12 @@ public class KurinNetworkClient {
 
     private final ConnectionManager connectionManager;
     private final PendingRequestsTracker tracker;
+    private final Timer timer;
 
-    public KurinNetworkClient(ConnectionManager connectionManager, PendingRequestsTracker tracker, int timeoutSeconds) {
+    public KurinNetworkClient(ConnectionManager connectionManager, PendingRequestsTracker tracker, Timer timer, int timeoutSeconds) {
         this.connectionManager = connectionManager;
         this.tracker = tracker;
+        this.timer = timer;
         this.timeoutSeconds = timeoutSeconds;
     }
 
@@ -36,13 +41,23 @@ public class KurinNetworkClient {
         );
 
         connectionManager.sendAsync(destination, message);
+        CompletableFuture<ClusterMessage> responseFuture = registered.future();
 
-        return registered.future()
-                .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
+        Timeout timeoutTask = timer.newTimeout(timeout -> {
+            if (!responseFuture.isDone()) {
+                log.warn("Request {} to {} timed out", registered.correlationId(), destination.asString());
+                responseFuture.completeExceptionally(new TimeoutException("Request timed out"));
+                tracker.completeRequest(registered.correlationId(), null);
+            }
+        }, timeoutSeconds, TimeUnit.SECONDS);
+
+        responseFuture.whenComplete((res, ex) -> {
+            if (!timeoutTask.isExpired()) timeoutTask.cancel();
+        });
+
+        return responseFuture
                 .thenApply(ClusterMessage::getPayload)
                 .exceptionally(ex -> {
-                    log.error("Request {} to {} failed: {}",
-                            registered.correlationId(), destination.asString(), ex.getMessage());
                     throw new RuntimeException("Network request failed", ex);
                 });
     }

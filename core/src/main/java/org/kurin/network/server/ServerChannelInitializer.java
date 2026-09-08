@@ -4,6 +4,7 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.timeout.IdleStateHandler;
 import org.kurin.network.codec.MessageDecoder;
 import org.kurin.network.codec.MessageEncoder;
 import org.kurin.network.config.NetworkConfig;
@@ -22,6 +23,8 @@ public class ServerChannelInitializer extends ChannelInitializer<SocketChannel> 
     protected void initChannel(SocketChannel ch) {
         NetworkConfig config = context.getNetworkConfig();
         ChannelPipeline pipeline = ch.pipeline();
+
+        pipeline.addLast(new IdleStateHandler(0, 0, 15)); //todo not hardcode
 
         pipeline.addLast(new LengthFieldBasedFrameDecoder(config.getMaxPayloadSize(), 11, 4, 0, 0));
 

@@ -6,9 +6,7 @@ import com.esotericsoftware.kryo.kryo5.io.Output;
 import com.esotericsoftware.kryo.kryo5.objenesis.strategy.StdInstantiatorStrategy;
 import com.esotericsoftware.kryo.kryo5.util.DefaultInstantiatorStrategy;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.io.*;
 
 public class KryoSerializer {
 
@@ -21,38 +19,21 @@ public class KryoSerializer {
         return kryo;
     });
 
-    public byte[] serialize(Object obj) {
+    public void serialize(Object obj, OutputStream outStream) {
         if (obj == null) {
-            return new byte[0];
+            return;
         }
 
         Kryo kryo = KRYO_THREAD_LOCAL.get();
 
-        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-             Output output = new Output(outputStream)) {
-
-            kryo.writeClassAndObject(output, obj);
-            output.flush();
-
-            return outputStream.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        Output output = new Output(outStream);
+        kryo.writeClassAndObject(output, obj);
+        output.flush();
     }
 
-    public Object deserialize(byte[] bytes) {
-        if (bytes == null || bytes.length == 0) {
-            return null;
-        }
-
+    public Object deserialize(InputStream inStream) {
         Kryo kryo = KRYO_THREAD_LOCAL.get();
-
-        try (ByteArrayInputStream inputStream = new ByteArrayInputStream(bytes);
-             Input input = new Input(inputStream)) {
-
-            return kryo.readClassAndObject(input);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        Input input = new Input(inStream);
+        return kryo.readClassAndObject(input);
     }
 }
