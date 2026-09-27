@@ -28,7 +28,7 @@ public class NetworkContext {
         this.networkConfig = networkConfig;
 
         this.dispatcher = dispatcher;
-        this.kryoSerializer = new KryoSerializer();
+        this.kryoSerializer = new KryoSerializer(networkConfig.getRegisteredClasses());
         this.tracker = new PendingRequestsTracker();
 
         this.sharedWorkerGroup = new NioEventLoopGroup(networkConfig.getWorkerThreads());

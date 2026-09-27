@@ -25,8 +25,14 @@ public abstract class AsyncThreadPoolDispatcher implements MessageDispatcher {
 
         nodeMailbox.submit(() -> {
             try {
-                Object result = processLogic(request);
-                resultFuture.complete(result);
+                CompletableFuture<Object> logicFuture = processLogic(request);
+                logicFuture.whenComplete((res, ex) -> {
+                    if (ex != null) {
+                        resultFuture.completeExceptionally(ex);
+                    } else {
+                        resultFuture.complete(res);
+                    }
+                });
             } catch (Exception e) {
                 log.error("Business logic execution failed for request {}", request.getCorrelationId(), e);
                 resultFuture.completeExceptionally(e);
@@ -36,7 +42,7 @@ public abstract class AsyncThreadPoolDispatcher implements MessageDispatcher {
         return resultFuture;
     }
 
-    protected abstract Object processLogic(ClusterMessage request);
+    protected abstract CompletableFuture<Object> processLogic(ClusterMessage request);
 
     public void shutdown() {
         businessLogicPool.shutdown();

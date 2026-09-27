@@ -1,10 +1,15 @@
 package org.kurin.network.config;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class NetworkConfig {
     private short magicNumber = 0x5252;
     private int maxPayloadSize = 1048576;
     private int requestTimeoutSeconds = 5;
     private int workerThreads = 0;
+
+    private List<Class<?>> registeredClasses = new ArrayList<>();
 
     public NetworkConfig() {
     }
@@ -39,5 +44,13 @@ public class NetworkConfig {
 
     public void setWorkerThreads(int workerThreads) {
         this.workerThreads = workerThreads;
+    }
+
+    public void registerClass(Class<?> clazz) {
+        this.registeredClasses.add(clazz);
+    }
+
+    public List<Class<?>> getRegisteredClasses() {
+        return registeredClasses;
     }
 }

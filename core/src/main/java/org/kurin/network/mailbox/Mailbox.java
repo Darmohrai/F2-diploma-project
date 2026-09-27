@@ -18,7 +18,7 @@ public class Mailbox {
 
     public void submit(Runnable task) {
         queue.offer(task);
-
+        schedule();
     }
 
     private void schedule() {

@@ -1,5 +1,6 @@
 package org.kurin.network;
 
+import io.netty.util.Timer;
 import org.kurin.network.client.KurinNetworkClient;
 import org.kurin.network.config.NetworkConfig;
 import org.kurin.network.context.NetworkContext;
@@ -27,5 +28,9 @@ public class NetworkStarter {
 
     public KurinNetworkClient getClient() {
         return context.getClient();
+    }
+
+    public Timer getTimer() {
+        return context.getTimer();
     }
 }
