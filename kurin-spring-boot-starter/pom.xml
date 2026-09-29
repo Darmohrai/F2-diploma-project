@@ -9,7 +9,7 @@
         <version>1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>raft-spring-boot-starter</artifactId>
+    <artifactId>kurin-spring-boot-starter</artifactId>
     <name>Kurin Spring Boot Starter</name>
 
     <dependencies>
