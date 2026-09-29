@@ -164,20 +164,22 @@ public class LeaderRole implements NodeRole {
             log.info("Request {} already processed. Returning cached result immediately.", request.requestId());
             return CompletableFuture.completedFuture(context.getCachedResult(request.requestId()));
         }
-
         long newIndex = context.getRaftLog().getLastLogIndex() + 1;
         long currentTerm = context.getCurrentTerm();
-
         LogEntry entry = new LogEntry(newIndex, currentTerm, request.requestId(), request.command());
         context.getRaftLog().append(entry);
-
         log.info("Client command {} received. Recorded at index {}.", request.requestId(), newIndex);
 
         CompletableFuture<Object> future = new CompletableFuture<>();
         context.registerClientFuture(newIndex, future);
 
-        broadcastAppendEntries(context);
-        context.startHeartbeatTimer();
+        if (context.getPeers().isEmpty()) {
+            context.setCommitIndex(newIndex);
+            context.applyCommittedEntries();
+        } else {
+            broadcastAppendEntries(context);
+            context.startHeartbeatTimer();
+        }
 
         return future;
     }

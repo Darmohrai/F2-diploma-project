@@ -32,6 +32,8 @@ public class RaftState {
     private final RaftLog raftLog;
     private final Mailbox mailbox;
 
+    private NodeAddress currentLeader = null;
+
     private long currentTerm = 0;
     private NodeAddress votedFor = null;
 
@@ -252,5 +254,13 @@ public class RaftState {
 
     public StateMachine getStateMachine() {
         return stateMachine;
+    }
+
+    public NodeAddress getCurrentLeader() {
+        return currentLeader;
+    }
+
+    public void setCurrentLeader(NodeAddress currentLeader) {
+        this.currentLeader = currentLeader;
     }
 }

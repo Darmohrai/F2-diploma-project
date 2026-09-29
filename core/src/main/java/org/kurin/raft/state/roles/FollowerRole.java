@@ -1,5 +1,6 @@
 package org.kurin.raft.state.roles;
 
+import org.kurin.network.model.NodeAddress;
 import org.kurin.raft.log.LogEntry;
 import org.kurin.raft.log.RaftLog;
 import org.kurin.raft.rpc.*;
@@ -72,31 +73,42 @@ public class FollowerRole implements NodeRole {
         if (request.term() < context.getCurrentTerm()) {
             return new AppendEntriesResponse(context.getCurrentTerm(), false);
         }
-
         if (request.term() > context.getCurrentTerm()) {
             context.setCurrentTerm(request.term());
             context.setVotedFor(null);
         }
         context.resetElectionTimer();
+        context.setCurrentLeader(request.leaderId());
 
         RaftLog raftLog = context.getRaftLog();
-        if (request.prevLogIndex() > 0) {
-            LogEntry prevEntry = raftLog.getEntry(request.prevLogIndex());
-            if (prevEntry == null || prevEntry.term() != request.prevLogTerm()) {
-                log.warn("Log mismatch detected. Rejecting AppendEntries to force synchronization.");
-                return new AppendEntriesResponse(context.getCurrentTerm(), false);
+        long prevLogIndex = request.prevLogIndex();
+
+        if (prevLogIndex > 0) {
+            if (prevLogIndex == raftLog.getBaseIndex()) {
+                if (request.prevLogTerm() != raftLog.getBaseTerm()) {
+                    return new AppendEntriesResponse(context.getCurrentTerm(), false);
+                }
+            } else if (prevLogIndex > raftLog.getBaseIndex()) {
+                LogEntry prevEntry = raftLog.getEntry(prevLogIndex);
+                if (prevEntry == null || prevEntry.term() != request.prevLogTerm()) {
+                    log.warn("Log mismatch detected at index {}. Rejecting to force sync.", prevLogIndex);
+                    return new AppendEntriesResponse(context.getCurrentTerm(), false);
+                }
             }
         }
 
-        long currentIndex = request.prevLogIndex() + 1;
+        long currentIndex = prevLogIndex + 1;
         for (LogEntry entry : request.entries()) {
-            LogEntry existingEntry = raftLog.getEntry(currentIndex);
+            if (currentIndex <= raftLog.getBaseIndex()) {
+                currentIndex++;
+                continue;
+            }
 
+            LogEntry existingEntry = raftLog.getEntry(currentIndex);
             if (existingEntry != null && existingEntry.term() != entry.term()) {
                 raftLog.truncateFrom(currentIndex);
                 existingEntry = null;
             }
-
             if (existingEntry == null) {
                 raftLog.append(entry);
             }
@@ -104,10 +116,8 @@ public class FollowerRole implements NodeRole {
         }
 
         if (request.leaderCommit() > context.getCommitIndex()) {
-            long lastNewEntryIndex = request.prevLogIndex() + request.entries().size();
+            long lastNewEntryIndex = prevLogIndex + request.entries().size();
             context.setCommitIndex(Math.min(request.leaderCommit(), lastNewEntryIndex));
-            log.debug("CommitIndex updated to: {}", context.getCommitIndex());
-
             context.applyCommittedEntries();
         }
 
@@ -115,11 +125,14 @@ public class FollowerRole implements NodeRole {
     }
 
     @Override
-    public CompletableFuture<Object> handleClientCommand(RaftState context, org.kurin.raft.rpc.ClientCommandRequest request) {
-        String leaderHost = context.getVotedFor() != null ? context.getVotedFor().asString() : "UNKNOWN";
-        return CompletableFuture.failedFuture(
-                new IllegalStateException("I am not the leader. Redirect to: " + leaderHost)
-        );
+    public CompletableFuture<Object> handleClientCommand(RaftState context, ClientCommandRequest request) {
+        NodeAddress leader = context.getCurrentLeader();
+        if (leader == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException("Cluster has no leader yet. Try again later."));
+        }
+
+        log.info("I am a FOLLOWER. Forwarding request {} to LEADER ({})", request.requestId(), leader.asString());
+        return context.getNetworkClient().sendRequest(leader, request);
     }
 
     @Override

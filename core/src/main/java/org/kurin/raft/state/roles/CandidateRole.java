@@ -26,11 +26,17 @@ public class CandidateRole implements NodeRole {
         context.flushMetadata();
         votesReceived = 1; // Vote for self
 
+        int quorum = getQuorum(context);
         log.info("Started election for term {}. Quorum required: {}",
-                context.getCurrentTerm(), getQuorum(context));
+                context.getCurrentTerm(), quorum);
+
+        if (votesReceived >= quorum) {
+            log.info("Quorum reached immediately (single node mode)! Transitioning to LEADER.");
+            context.transitionTo(new LeaderRole());
+            return;
+        }
 
         context.resetElectionTimer();
-
         RequestVoteRequest request = new RequestVoteRequest(
                 context.getCurrentTerm(),
                 context.getLocalAddress(),
