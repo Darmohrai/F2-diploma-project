@@ -7,4 +7,6 @@ public interface StateMachine {
     byte[] takeSnapshot();
 
     void installSnapshot(byte[] data);
+
+    void addListener(StateMachineListener listener);
 }

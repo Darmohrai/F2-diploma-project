@@ -2,8 +2,10 @@ package org.kurin.raft;
 
 import org.kurin.network.config.NetworkConfig;
 import org.kurin.network.model.NodeAddress;
+import org.kurin.network.serializer.KryoSerializer;
 import org.kurin.raft.rpc.ClientCommandRequest;
 import org.kurin.raft.state.StateMachine;
+import org.kurin.raft.state.StateMachineListener;
 import org.kurin.raft.tools.PojoStateMachine;
 
 import java.util.*;
@@ -59,6 +61,8 @@ public class KurinNode {
 
         private final List<Object> services = new java.util.ArrayList<>();
 
+        private final List<StateMachineListener> listeners = new java.util.ArrayList<>();
+
         public Builder localNode(String host, int port) {
             this.host = host;
             this.port = port;
@@ -75,10 +79,17 @@ public class KurinNode {
                 throw new IllegalArgumentException("Port and at least one Service must be configured");
             }
 
-            org.kurin.network.serializer.KryoSerializer serializer =
+            KryoSerializer serializer =
                     new org.kurin.network.serializer.KryoSerializer(config.getRegisteredClasses());
 
-            this.stateMachine = new org.kurin.raft.tools.PojoStateMachine(services, serializer);
+            PojoStateMachine pojoStateMachine =
+                    new org.kurin.raft.tools.PojoStateMachine(services, serializer);
+
+            for (StateMachineListener listener : listeners) {
+                pojoStateMachine.addListener(listener);
+            }
+
+            this.stateMachine = pojoStateMachine;
 
             NodeAddress localAddress = new NodeAddress(host, port);
             RaftNode node = new RaftNode(localAddress, peers, stateMachine, config);
@@ -116,6 +127,11 @@ public class KurinNode {
                     }
                 }
             }
+            return this;
+        }
+
+        public Builder addStateMachineListener(StateMachineListener listener) {
+            this.listeners.add(listener);
             return this;
         }
     }
