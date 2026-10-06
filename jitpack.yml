@@ -3,4 +3,6 @@ jdk:
 
 install:
   - unset M2_HOME
+  - unset MAVEN_HOME
+  - sdk install maven
   - mvn clean install -DskipTests
