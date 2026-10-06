@@ -1,4 +1,4 @@
 jdk:
   - openjdk21
 install:
-  - sdk install maven 3.9.6 && mvn -B clean install -DskipTests
+  - unset M2_HOME MAVEN_HOME && chmod +x mvnw && ./mvnw -B clean install -DskipTests
