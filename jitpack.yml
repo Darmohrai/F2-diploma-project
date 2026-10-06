@@ -1,5 +1,6 @@
 jdk:
   - openjdk21
+
 install:
-  - chmod +x mvnw
+  - sdk install maven
   - mvn clean install -DskipTests
