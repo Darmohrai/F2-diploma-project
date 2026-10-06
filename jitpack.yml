@@ -2,7 +2,5 @@ jdk:
   - openjdk21
 
 install:
-  - unset M2_HOME
-  - unset MAVEN_HOME
   - sdk install maven
-  - mvn clean install -DskipTests
+  - export M2_HOME=$HOME/.sdkman/candidates/maven/current && export MAVEN_HOME=$M2_HOME && $M2_HOME/bin/mvn clean install -DskipTests
