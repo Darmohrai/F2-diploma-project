@@ -27,16 +27,6 @@ public class KurinLocksAutoConfiguration {
     }
 
     @Bean
-    public KurinNodeBuilderCustomizer locksRaftIntegrator(DistributedLockService lockService) {
-        return (builder, registeredServices) -> {
-            builder.registerCommand(AcquireLockCommand.class);
-            builder.registerCommand(ReleaseLockCommand.class);
-
-            builder.addService(lockService);
-        };
-    }
-
-    @Bean
     @ConditionalOnMissingBean
     public KurinLockManager kurinLockManager(KurinNode kurinNode) {
         return new KurinLockManager(kurinNode);
