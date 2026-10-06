@@ -53,16 +53,4 @@
         </dependencies>
     </dependencyManagement>
 
-    <build>
-        <pluginManagement>
-            <plugins>
-                <plugin>
-                    <groupId>org.xolstice.maven.plugins</groupId>
-                    <artifactId>protobuf-maven-plugin</artifactId>
-                    <version>0.6.1</version>
-                </plugin>
-            </plugins>
-        </pluginManagement>
-    </build>
-
 </project>
