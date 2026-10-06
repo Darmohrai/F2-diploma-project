@@ -2,5 +2,5 @@ jdk:
   - openjdk21
 
 install:
-  - sdk install maven
+  - unset M2_HOME
   - mvn clean install -DskipTests
