@@ -27,6 +27,8 @@
         <module>kurin-spring-boot-starter</module>
         <module>kurin-tiered-cache</module>
         <module>kurin-cache-spring-boot-starter</module>
+        <module>kurin-locks</module>
+        <module>kurin-locks-spring-boot-starter</module>
     </modules>
 
     <dependencyManagement>

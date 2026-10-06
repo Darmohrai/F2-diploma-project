@@ -6,6 +6,10 @@ import java.util.concurrent.CompletableFuture;
 
 public interface NodeRole {
 
+    default boolean isLeader() {
+        return "LEADER".equals(roleName());
+    }
+
     String roleName();
 
     void onEnter(RaftState context);
