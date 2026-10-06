@@ -36,11 +36,5 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
         </dependency>
-        <dependency>
-            <groupId>org.kurin</groupId>
-            <artifactId>core</artifactId>
-            <version>1.0.4</version>
-            <scope>compile</scope>
-        </dependency>
     </dependencies>
 </project>
