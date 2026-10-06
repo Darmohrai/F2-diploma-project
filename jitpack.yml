@@ -1,4 +1,5 @@
 jdk:
   - openjdk21
 install:
-  - unset M2_HOME MAVEN_HOME && chmod +x mvnw && ./mvnw -B clean install -DskipTests
+  - curl -sL https://archive.apache.org/dist/maven/maven-3/3.9.6/binaries/apache-maven-3.9.6-bin.tar.gz | tar xz
+  - MAVEN_HOME="$(pwd)/apache-maven-3.9.6" M2_HOME="$(pwd)/apache-maven-3.9.6" ./apache-maven-3.9.6/bin/mvn -B clean install -DskipTests
