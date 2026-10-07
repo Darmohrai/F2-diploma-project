@@ -22,14 +22,19 @@ import java.util.List;
 public class KurinCacheAutoConfiguration {
 
     @Bean(destroyMethod = "close")
-    public KurinCacheManager kurinCacheManager(ObjectProvider<KryoSerializer> cacheSerializerProvider) {
+    public KurinCacheManager kurinCacheManager(
+            ObjectProvider<KryoSerializer> cacheSerializerProvider,
+            ObjectProvider<CacheProvider> externalProviders) {
 
         KryoSerializer cacheSerializer = cacheSerializerProvider.getObject();
 
-        List<CacheProvider> providers = List.of(
+        List<CacheProvider> providers = new java.util.ArrayList<>(List.of(
                 new CaffeineCacheProvider(),
                 new RocksDBCacheProvider()
-        );
+        ));
+
+        externalProviders.orderedStream().forEach(providers::add);
+
         CacheConfigurationContext context = new CacheConfigurationContext(cacheSerializer, "./kurin-data/cache");
         return new DefaultKurinCacheManager(providers, context);
     }
