@@ -1,5 +1,7 @@
-jdk:
-  - openjdk21
+before_install:
+  - sdk install java 21.0.2-tem || true
+  - sdk use java 21.0.2-tem
+
 install:
   - export MAVEN_SKIP_RC=1
   - chmod +x ./mvnw
