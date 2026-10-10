@@ -8,5 +8,5 @@ public record InstallSnapshotRequest(
         long lastIncludedIndex,
         long lastIncludedTerm,
         byte[] data
-) {
+) implements RaftRpc {
 }

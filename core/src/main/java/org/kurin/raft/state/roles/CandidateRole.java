@@ -131,4 +131,11 @@ public class CandidateRole implements NodeRole {
         }
         return new InstallSnapshotResponse(context.getCurrentTerm());
     }
+
+    @Override
+    public CompletableFuture<Object> handleClientQuery(RaftState context, org.kurin.raft.rpc.ClientQueryRequest request) {
+        return CompletableFuture.failedFuture(
+                new IllegalStateException("I am currently a CANDIDATE. Wait for leader election.")
+        );
+    }
 }

@@ -158,4 +158,14 @@ public class FollowerRole implements NodeRole {
 
         return new InstallSnapshotResponse(context.getCurrentTerm());
     }
+
+    @Override
+    public CompletableFuture<Object> handleClientQuery(RaftState context, org.kurin.raft.rpc.ClientQueryRequest request) {
+        NodeAddress leader = context.getCurrentLeader();
+        if (leader == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException("Cluster has no leader yet. Try again later."));
+        }
+        log.debug("I am a FOLLOWER. Forwarding QUERY request {} to LEADER ({})", request.requestId(), leader.asString());
+        return context.getNetworkClient().sendRequest(leader, request);
+    }
 }

@@ -11,7 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class DefaultKurinCacheManager implements KurinCacheManager, AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(DefaultKurinCacheManager.class);
-
     private final Map<String, KurinCache> activeCaches = new ConcurrentHashMap<>();
     private final List<CacheProvider> providers;
     private final CacheConfigurationContext context;
@@ -25,7 +24,6 @@ public class DefaultKurinCacheManager implements KurinCacheManager, AutoCloseabl
     public KurinCache getOrCreateCache(String cacheName, CacheTier tier) {
         return activeCaches.computeIfAbsent(cacheName, name -> {
             log.info("Creating new cache '{}' with tier {}", name, tier);
-
             if (tier == CacheTier.TIERED_SMART) {
                 List<KurinCache> tiers = new ArrayList<>();
                 tiers.add(resolveProvider(CacheTier.L1_MEMORY).createCache(name + "_L1", context));
@@ -34,10 +32,9 @@ public class DefaultKurinCacheManager implements KurinCacheManager, AutoCloseabl
                 CacheProvider l3Provider = findProvider(CacheTier.L3_EXTERNAL);
                 if (l3Provider != null) {
                     KurinCache rawL3Cache = l3Provider.createCache(name + "_L3", context);
-                    tiers.add(new FaultTolerantCacheDecorator(rawL3Cache));
+                    tiers.add(new FaultTolerantCacheDecorator(rawL3Cache, context.l3MaxFailures(), context.l3CircuitOpenTimeoutMs()));
                     log.info("L3 External Cache successfully integrated into composite cache '{}'", name);
                 }
-
                 return new TieredCompositeCache(name, tiers);
             }
             return resolveProvider(tier).createCache(name, context);

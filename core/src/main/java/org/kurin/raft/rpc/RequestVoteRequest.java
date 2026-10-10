@@ -15,5 +15,5 @@ public record RequestVoteRequest(
         NodeAddress candidateId,
         long lastLogIndex,
         long lastLogTerm
-) {
+) implements RaftRpc {
 }

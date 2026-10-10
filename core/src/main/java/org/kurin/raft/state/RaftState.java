@@ -11,10 +11,7 @@ import org.kurin.raft.state.roles.CandidateRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -57,18 +54,24 @@ public class RaftState {
     };
 
     private final PersistentMetadata metadata;
+    private final List<KurinRoleChangeListener> roleListeners;
 
     public RaftState(NodeAddress localAddress, Set<NodeAddress> peers, RaftLog raftLog,
-                     Mailbox mailbox, StateMachine stateMachine, PersistentMetadata metadata) {
+                     Mailbox mailbox, StateMachine stateMachine, PersistentMetadata metadata,
+                     java.util.List<KurinRoleChangeListener> roleListeners) {
         this.localAddress = localAddress;
         this.peers = peers;
         this.raftLog = raftLog;
         this.mailbox = mailbox;
         this.stateMachine = stateMachine;
         this.metadata = metadata;
+        this.roleListeners = roleListeners != null ? roleListeners : new java.util.ArrayList<>();
     }
 
     public void transitionTo(NodeRole newRole) {
+        boolean wasLeader = this.currentRole != null && this.currentRole.isLeader();
+        boolean isLeader = newRole.isLeader();
+
         if (this.currentRole != null) {
             log.info("Node {} is leaving the role: {}", localAddress.asString(), this.currentRole.roleName());
             this.currentRole.onExit(this);
@@ -77,6 +80,12 @@ public class RaftState {
         this.currentRole = newRole;
         log.info("Node {} transitions to the role: {}", localAddress.asString(), newRole.roleName());
         this.currentRole.onEnter(this);
+
+        if (!wasLeader && isLeader) {
+            roleListeners.forEach(KurinRoleChangeListener::onLeaderElected);
+        } else if (wasLeader && !isLeader) {
+            roleListeners.forEach(KurinRoleChangeListener::onLeaderLost);
+        }
     }
 
     public void applyCommittedEntries() {

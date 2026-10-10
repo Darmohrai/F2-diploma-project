@@ -20,7 +20,9 @@ public interface NodeRole {
 
     AppendEntriesResponse handleAppendEntries(RaftState context, AppendEntriesRequest request);
 
-    CompletableFuture<Object> handleClientCommand(RaftState context, org.kurin.raft.rpc.ClientCommandRequest request);
+    CompletableFuture<Object> handleClientCommand(RaftState context, ClientCommandRequest request);
 
-    InstallSnapshotResponse handleInstallSnapshot(RaftState context, org.kurin.raft.rpc.InstallSnapshotRequest request);
+    InstallSnapshotResponse handleInstallSnapshot(RaftState context, InstallSnapshotRequest request);
+
+    CompletableFuture<Object> handleClientQuery(RaftState context, ClientQueryRequest request);
 }

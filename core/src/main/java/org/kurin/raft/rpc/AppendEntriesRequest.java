@@ -22,5 +22,5 @@ public record AppendEntriesRequest(
         long prevLogTerm,
         List<LogEntry> entries,
         long leaderCommit
-) {
+) implements RaftRpc {
 }

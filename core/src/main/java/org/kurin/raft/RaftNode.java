@@ -21,26 +21,22 @@ public class RaftNode {
     private final RaftDispatcher dispatcher;
     private final ExecutorService mailboxExecutor;
 
-    public RaftNode(NodeAddress localAddress, Set<NodeAddress> peers, StateMachine stateMachine, NetworkConfig config) {
-
+    public RaftNode(NodeAddress localAddress, Set<NodeAddress> peers, StateMachine stateMachine,
+                    NetworkConfig config, java.util.List<org.kurin.raft.state.KurinRoleChangeListener> roleListeners) { // <--- ДОДАНО параметр
         this.mailboxExecutor = Executors.newSingleThreadExecutor();
         Mailbox mailbox = new Mailbox(mailboxExecutor);
-
         String nodeId = String.valueOf(localAddress.port());
-
         this.raftState = new RaftState(
                 localAddress,
                 peers,
                 new InMemoryRaftLog(),
                 mailbox,
                 stateMachine,
-                new FilePersistentMetadata(nodeId)
+                new FilePersistentMetadata(nodeId),
+                roleListeners
         );
-
         this.dispatcher = new RaftDispatcher(this.raftState);
-
         this.networkStarter = new NetworkStarter(localAddress.port(), this.dispatcher, config);
-
         this.raftState.setNetworkClient(networkStarter.getClient());
         this.raftState.setTimer(networkStarter.getTimer());
     }

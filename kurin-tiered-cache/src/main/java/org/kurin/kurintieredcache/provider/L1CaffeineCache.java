@@ -10,11 +10,11 @@ public class L1CaffeineCache implements KurinCache {
     private final String name;
     private final Cache<String, Object> cache;
 
-    public L1CaffeineCache(String name) {
+    public L1CaffeineCache(String name, long maxSize, long expireAfterAccessMinutes) {
         this.name = name;
         this.cache = Caffeine.newBuilder()
-                .maximumSize(10_000)
-                .expireAfterAccess(15, TimeUnit.MINUTES)
+                .maximumSize(maxSize)
+                .expireAfterAccess(expireAfterAccessMinutes, TimeUnit.MINUTES)
                 .build();
     }
 

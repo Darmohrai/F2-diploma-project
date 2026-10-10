@@ -37,6 +37,7 @@ public class KryoSerializer {
             kryo.register(ClientCommandRequest.class, 26);
             kryo.register(InstallSnapshotRequest.class, 27);
             kryo.register(InstallSnapshotResponse.class, 28);
+            kryo.register(ClientQueryRequest.class, 29);
 
             int customIdBase = 100;
             for (Class<?> clazz : customClasses) {

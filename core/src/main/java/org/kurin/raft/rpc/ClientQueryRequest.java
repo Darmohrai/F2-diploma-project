@@ -1,7 +1,7 @@
 package org.kurin.raft.rpc;
 
-public record ClientCommandRequest(
+public record ClientQueryRequest(
         String requestId,
-        Object command
+        Object query
 ) implements RaftRpc {
 }

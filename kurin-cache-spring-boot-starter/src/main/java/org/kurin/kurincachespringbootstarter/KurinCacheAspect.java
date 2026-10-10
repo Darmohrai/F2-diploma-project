@@ -9,6 +9,9 @@ import org.kurin.kurintieredcache.core.KurinCache;
 import org.kurin.kurintieredcache.core.KurinCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.expression.ExpressionParser;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.expression.spel.support.StandardEvaluationContext;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
@@ -16,7 +19,9 @@ import java.util.Arrays;
 @Aspect
 public class KurinCacheAspect {
     private static final Logger log = LoggerFactory.getLogger(KurinCacheAspect.class);
+
     private final KurinCacheManager cacheManager;
+    private final ExpressionParser parser = new SpelExpressionParser();
 
     public KurinCacheAspect(KurinCacheManager cacheManager) {
         this.cacheManager = cacheManager;
@@ -27,9 +32,7 @@ public class KurinCacheAspect {
         String cacheName = kurinCacheable.cacheName();
         KurinCache cache = cacheManager.getOrCreateCache(cacheName, kurinCacheable.tier());
 
-        String key = kurinCacheable.key().isEmpty()
-                ? generateDefaultKey(joinPoint)
-                : kurinCacheable.key();
+        String key = parseSpelKey(joinPoint, kurinCacheable.key());
 
         Object cachedValue = cache.get(key);
         if (cachedValue != null) {
@@ -44,6 +47,29 @@ public class KurinCacheAspect {
             cache.put(key, result);
         }
         return result;
+    }
+
+    private String parseSpelKey(ProceedingJoinPoint joinPoint, String spelExpression) {
+        if (spelExpression == null || spelExpression.trim().isEmpty()) {
+            return generateDefaultKey(joinPoint);
+        }
+
+        StandardEvaluationContext context = new StandardEvaluationContext();
+        Object[] args = joinPoint.getArgs();
+        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
+        String[] paramNames = signature.getParameterNames();
+
+        if (paramNames != null) {
+            for (int i = 0; i < args.length; i++) {
+                context.setVariable(paramNames[i], args[i]);
+            }
+        }
+
+        try {
+            return parser.parseExpression(spelExpression).getValue(context, String.class);
+        } catch (Exception e) {
+            return spelExpression;
+        }
     }
 
     private String generateDefaultKey(ProceedingJoinPoint joinPoint) {

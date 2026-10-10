@@ -4,6 +4,7 @@ import org.kurin.network.config.NetworkConfig;
 import org.kurin.network.model.NodeAddress;
 import org.kurin.network.serializer.KryoSerializer;
 import org.kurin.raft.rpc.ClientCommandRequest;
+import org.kurin.raft.state.KurinRoleChangeListener;
 import org.kurin.raft.state.RaftState;
 import org.kurin.raft.state.StateMachine;
 import org.kurin.raft.state.StateMachineListener;
@@ -50,6 +51,28 @@ public class KurinNode {
         return resultFuture.thenApply(res -> (T) res);
     }
 
+    public <T> CompletableFuture<T> submitQuery(Object query) {
+        String uniqueId = java.util.UUID.randomUUID().toString();
+        org.kurin.raft.rpc.ClientQueryRequest request = new org.kurin.raft.rpc.ClientQueryRequest(uniqueId, query);
+        CompletableFuture<Object> resultFuture = new CompletableFuture<>();
+
+        internalNode.getRaftState().getMailbox().submit(() -> {
+            try {
+                internalNode.getRaftState().getCurrentRole().handleClientQuery(internalNode.getRaftState(), request)
+                        .whenComplete((result, throwable) -> {
+                            if (throwable != null) {
+                                resultFuture.completeExceptionally(throwable);
+                            } else {
+                                resultFuture.complete(result);
+                            }
+                        });
+            } catch (Exception e) {
+                resultFuture.completeExceptionally(e);
+            }
+        });
+        return resultFuture.thenApply(res -> (T) res);
+    }
+
     public RaftState getRaftState() {
         return internalNode.getRaftState();
     }
@@ -73,8 +96,10 @@ public class KurinNode {
         private StateMachine stateMachine;
         private final NetworkConfig config = new NetworkConfig();
 
-        private final List<Object> services = new java.util.ArrayList<>();
-        private final List<StateMachineListener> listeners = new java.util.ArrayList<>();
+        private final List<Object> services = new ArrayList<>();
+        private final List<StateMachineListener> listeners = new ArrayList<>();
+
+        private final List<KurinRoleChangeListener> roleListeners = new ArrayList<>();
 
         public Builder localNode(String host, int port) {
             this.host = host;
@@ -105,6 +130,11 @@ public class KurinNode {
             return this;
         }
 
+        public Builder addRoleChangeListener(org.kurin.raft.state.KurinRoleChangeListener listener) {
+            this.roleListeners.add(listener);
+            return this;
+        }
+
         public KurinNode build() {
             if (port == 0 || services.isEmpty()) {
                 throw new IllegalArgumentException("Port and at least one Service must be configured");
@@ -120,7 +150,8 @@ public class KurinNode {
             this.stateMachine = pojoStateMachine;
 
             NodeAddress localAddress = new NodeAddress(host, port);
-            RaftNode node = new RaftNode(localAddress, peers, stateMachine, config);
+
+            RaftNode node = new RaftNode(localAddress, peers, stateMachine, config, roleListeners);
             return new KurinNode(node);
         }
     }

@@ -8,18 +8,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class FaultTolerantCacheDecorator implements KurinCache {
     private static final Logger log = LoggerFactory.getLogger(FaultTolerantCacheDecorator.class);
 
-    private static final int MAX_FAILURES = 3;
-    private static final long OPEN_TIMEOUT_MS = 10000;
-
     private final KurinCache delegate;
     private final String name;
+    private final int maxFailures;
+    private final long openTimeoutMs;
 
     private final AtomicInteger failureCount = new AtomicInteger(0);
     private volatile long circuitOpenUntil = 0;
 
-    public FaultTolerantCacheDecorator(KurinCache delegate) {
+    public FaultTolerantCacheDecorator(KurinCache delegate, int maxFailures, long openTimeoutMs) {
         this.delegate = delegate;
         this.name = delegate.getName();
+        this.maxFailures = maxFailures;
+        this.openTimeoutMs = openTimeoutMs;
     }
 
     @Override
@@ -99,10 +100,9 @@ public class FaultTolerantCacheDecorator implements KurinCache {
     private void onFailure(String operation, Exception e) {
         int failures = failureCount.incrementAndGet();
         log.warn("[L3 Cache] Operation {} failed in cache '{}': {}", operation, name, e.getMessage());
-
-        if (failures >= MAX_FAILURES && circuitOpenUntil == 0) {
-            log.error("[L3 Cache] Circuit Breaker OPENED for '{}'. Pausing requests for {} ms.", name, OPEN_TIMEOUT_MS);
-            circuitOpenUntil = System.currentTimeMillis() + OPEN_TIMEOUT_MS;
+        if (failures >= maxFailures && circuitOpenUntil == 0) {
+            log.error("[L3 Cache] Circuit Breaker OPENED for '{}'. Pausing requests for {} ms.", name, openTimeoutMs);
+            circuitOpenUntil = System.currentTimeMillis() + openTimeoutMs;
         }
     }
 }

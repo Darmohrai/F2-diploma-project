@@ -1,6 +1,7 @@
 package org.kurin.raft.tools;
 
 import org.kurin.api.KurinCommand;
+import org.kurin.api.KurinQuery;
 import org.kurin.api.KurinRestore;
 import org.kurin.api.KurinSnapshot;
 import org.kurin.network.serializer.KryoSerializer;
@@ -22,6 +23,7 @@ public class PojoStateMachine implements StateMachine {
     }
 
     private final Map<Class<?>, Handler> commandHandlers = new HashMap<>();
+    private final Map<Class<?>, Handler> queryHandlers = new HashMap<>();
     private final List<Handler> snapshotHandlers = new ArrayList<>();
     private final List<Handler> restoreHandlers = new ArrayList<>();
     private final List<StateMachineListener> listeners = new ArrayList<>();
@@ -29,7 +31,6 @@ public class PojoStateMachine implements StateMachine {
 
     public PojoStateMachine(List<Object> services, KryoSerializer serializer) {
         this.serializer = serializer;
-
         for (Object service : services) {
             Class<?> clazz = service.getClass();
             if (clazz.getName().contains("$$")) {
@@ -47,6 +48,17 @@ public class PojoStateMachine implements StateMachine {
                         throw new IllegalStateException("Routing conflict for command: " + commandType.getSimpleName());
                     }
                     commandHandlers.put(commandType, new Handler(service, method));
+
+                } else if (method.isAnnotationPresent(KurinQuery.class)) {
+                    if (method.getParameterCount() != 1) {
+                        throw new IllegalArgumentException("@KurinQuery must have 1 param: " + method.getName());
+                    }
+                    Class<?> queryType = method.getParameterTypes()[0];
+                    if (queryHandlers.containsKey(queryType)) {
+                        throw new IllegalStateException("Routing conflict for query: " + queryType.getSimpleName());
+                    }
+                    queryHandlers.put(queryType, new Handler(service, method));
+
                 } else if (method.isAnnotationPresent(KurinSnapshot.class)) {
                     snapshotHandlers.add(new Handler(service, method));
                 } else if (method.isAnnotationPresent(KurinRestore.class)) {
@@ -69,7 +81,20 @@ public class PojoStateMachine implements StateMachine {
             }
             return result;
         } catch (IllegalAccessException | InvocationTargetException e) {
-            throw new RuntimeException("Kurin action execution failed", e);
+            throw new RuntimeException("Kurin command execution failed", e);
+        }
+    }
+
+    @Override
+    public Object executeQuery(Object query) {
+        Handler handler = queryHandlers.get(query.getClass());
+        if (handler == null) {
+            throw new IllegalArgumentException("No handler found for query: " + query.getClass());
+        }
+        try {
+            return handler.method().invoke(handler.instance(), query);
+        } catch (IllegalAccessException | InvocationTargetException e) {
+            throw new RuntimeException("Kurin query execution failed", e);
         }
     }
 
@@ -96,7 +121,6 @@ public class PojoStateMachine implements StateMachine {
             ByteArrayInputStream bis = new ByteArrayInputStream(data);
             @SuppressWarnings("unchecked")
             Map<String, byte[]> aggregateState = (Map<String, byte[]>) serializer.deserialize(bis);
-
             for (Handler handler : restoreHandlers) {
                 String serviceName = handler.instance().getClass().getName();
                 byte[] serviceData = aggregateState.get(serviceName);

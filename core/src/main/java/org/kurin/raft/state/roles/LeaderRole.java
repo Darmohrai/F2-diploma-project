@@ -213,4 +213,14 @@ public class LeaderRole implements NodeRole {
         }
         return new InstallSnapshotResponse(context.getCurrentTerm());
     }
+
+    @Override
+    public CompletableFuture<Object> handleClientQuery(RaftState context, org.kurin.raft.rpc.ClientQueryRequest request) {
+        try {
+            Object result = context.getStateMachine().executeQuery(request.query());
+            return CompletableFuture.completedFuture(result);
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(e);
+        }
+    }
 }

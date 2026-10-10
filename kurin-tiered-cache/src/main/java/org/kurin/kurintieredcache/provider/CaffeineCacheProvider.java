@@ -13,6 +13,6 @@ public class CaffeineCacheProvider implements CacheProvider {
 
     @Override
     public KurinCache createCache(String name, CacheConfigurationContext context) {
-        return new L1CaffeineCache(name);
+        return new L1CaffeineCache(name, context.l1MaxSize(), context.l1ExpireAfterAccessMinutes());
     }
 }

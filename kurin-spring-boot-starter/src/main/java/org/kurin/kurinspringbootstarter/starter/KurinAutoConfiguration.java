@@ -1,15 +1,22 @@
 package org.kurin.kurinspringbootstarter.starter;
 
 import org.kurin.api.KurinCommand;
+import org.kurin.api.KurinQuery;
 import org.kurin.api.KurinRestore;
 import org.kurin.api.KurinSnapshot;
+import org.kurin.kurinspringbootstarter.events.KurinLeaderElectedEvent;
+import org.kurin.kurinspringbootstarter.events.KurinLeaderLostEvent;
+import org.kurin.kurinspringbootstarter.template.KurinTemplate;
 import org.kurin.network.serializer.KryoSerializer;
 import org.kurin.raft.KurinNode;
+import org.kurin.raft.state.KurinRoleChangeListener;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 
 import java.lang.reflect.Method;
@@ -32,11 +39,12 @@ public class KurinAutoConfiguration {
                     Object bean = context.getBean(beanName);
                     Class<?> targetClass = AopUtils.getTargetClass(bean);
                     for (Method method : targetClass.getDeclaredMethods()) {
-                        if (method.isAnnotationPresent(KurinCommand.class)) {
+                        if (method.isAnnotationPresent(KurinCommand.class) || method.isAnnotationPresent(KurinQuery.class)) {
                             registeredClasses.add(method.getParameterTypes()[0]);
                         }
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) {
+                }
             }
         }
         return new KryoSerializer(registeredClasses);
@@ -46,7 +54,8 @@ public class KurinAutoConfiguration {
     public KurinNode kurinNode(
             KurinProperties props,
             ApplicationContext context,
-            ObjectProvider<KurinNodeBuilderCustomizer> customizers) {
+            ObjectProvider<KurinNodeBuilderCustomizer> customizers,
+            ApplicationEventPublisher eventPublisher) {
 
         KurinNode.Builder builder = KurinNode.builder()
                 .localNode(props.getHost(), props.getPort());
@@ -54,6 +63,18 @@ public class KurinAutoConfiguration {
         if (props.getPeers() != null && !props.getPeers().isEmpty()) {
             builder.addPeers(props.getPeers().toArray(new String[0]));
         }
+
+        builder.addRoleChangeListener(new KurinRoleChangeListener() {
+            @Override
+            public void onLeaderElected() {
+                eventPublisher.publishEvent(new KurinLeaderElectedEvent(this));
+            }
+
+            @Override
+            public void onLeaderLost() {
+                eventPublisher.publishEvent(new KurinLeaderLostEvent(this));
+            }
+        });
 
         Set<Object> registeredServices = new HashSet<>();
         List<Object> servicesList = new ArrayList<>();
@@ -69,7 +90,7 @@ public class KurinAutoConfiguration {
                 boolean isKurinService = false;
 
                 for (Method method : targetClass.getDeclaredMethods()) {
-                    if (method.isAnnotationPresent(KurinCommand.class)) {
+                    if (method.isAnnotationPresent(KurinCommand.class) || method.isAnnotationPresent(KurinQuery.class)) {
                         builder.registerCommand(method.getParameterTypes()[0]);
                         isKurinService = true;
                     } else if (method.isAnnotationPresent(KurinSnapshot.class) ||
@@ -84,10 +105,17 @@ public class KurinAutoConfiguration {
                         servicesList.add(bean);
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
 
         customizers.orderedStream().forEach(customizer -> customizer.customize(builder, servicesList));
         return builder.build();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public KurinTemplate kurinTemplate(KurinNode kurinNode) {
+        return new KurinTemplate(kurinNode);
     }
 }

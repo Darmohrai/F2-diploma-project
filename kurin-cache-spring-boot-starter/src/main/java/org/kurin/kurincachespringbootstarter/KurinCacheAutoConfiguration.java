@@ -10,6 +10,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
@@ -19,12 +20,14 @@ import java.util.List;
 @ConditionalOnClass(KurinCacheManager.class)
 @EnableAspectJAutoProxy
 @AutoConfigureAfter(KurinAutoConfiguration.class)
+@EnableConfigurationProperties(KurinCacheProperties.class)
 public class KurinCacheAutoConfiguration {
 
     @Bean(destroyMethod = "close")
     public KurinCacheManager kurinCacheManager(
             ObjectProvider<KryoSerializer> cacheSerializerProvider,
-            ObjectProvider<CacheProvider> externalProviders) {
+            ObjectProvider<CacheProvider> externalProviders,
+            KurinCacheProperties props) {
 
         KryoSerializer cacheSerializer = cacheSerializerProvider.getObject();
 
@@ -32,10 +35,17 @@ public class KurinCacheAutoConfiguration {
                 new CaffeineCacheProvider(),
                 new RocksDBCacheProvider()
         ));
-
         externalProviders.orderedStream().forEach(providers::add);
 
-        CacheConfigurationContext context = new CacheConfigurationContext(cacheSerializer, "./kurin-data/cache");
+        CacheConfigurationContext context = new CacheConfigurationContext(
+                cacheSerializer,
+                props.getStorageDir(),
+                props.getL1MaxSize(),
+                props.getL1ExpireMinutes(),
+                props.getL3MaxFailures(),
+                props.getL3CircuitOpenTimeoutMs()
+        );
+
         return new DefaultKurinCacheManager(providers, context);
     }
 

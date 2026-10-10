@@ -4,6 +4,8 @@ public interface StateMachine {
 
     Object apply(Object command);
 
+    Object executeQuery(Object query);
+
     byte[] takeSnapshot();
 
     void installSnapshot(byte[] data);
