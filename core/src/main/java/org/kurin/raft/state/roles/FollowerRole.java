@@ -1,14 +1,24 @@
 package org.kurin.raft.state.roles;
 
+import org.kurin.api.exception.KurinNoLeaderException;
+import org.kurin.api.exception.KurinNotLeaderException;
+import org.kurin.network.dto.RpcResult;
 import org.kurin.network.model.NodeAddress;
+import org.kurin.raft.RaftRole;
 import org.kurin.raft.log.LogEntry;
 import org.kurin.raft.log.RaftLog;
-import org.kurin.raft.rpc.*;
+import org.kurin.raft.rpc.AppendEntriesRequest;
+import org.kurin.raft.rpc.AppendEntriesResponse;
+import org.kurin.raft.rpc.ClientCommandRequest;
+import org.kurin.raft.rpc.ClientQueryRequest;
+import org.kurin.raft.rpc.RequestVoteRequest;
+import org.kurin.raft.rpc.RequestVoteResponse;
 import org.kurin.raft.state.NodeRole;
 import org.kurin.raft.state.RaftState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 public class FollowerRole implements NodeRole {
@@ -16,13 +26,12 @@ public class FollowerRole implements NodeRole {
     private static final Logger log = LoggerFactory.getLogger(FollowerRole.class);
 
     @Override
-    public String roleName() {
-        return "FOLLOWER";
+    public RaftRole role() {
+        return RaftRole.FOLLOWER;
     }
 
     @Override
     public void onEnter(RaftState context) {
-        log.info("Node has transitioned to the FOLLOWER state.");
         context.resetElectionTimer();
     }
 
@@ -32,140 +41,135 @@ public class FollowerRole implements NodeRole {
     }
 
     @Override
-    public RequestVoteResponse handleRequestVote(RaftState context, RequestVoteRequest request) {
-        boolean stateChanged = false;
+    public void onElectionTimeout(RaftState context) {
+        log.info("No heartbeat from a leader on {}. Starting an election.", context.getLocalAddress().asString());
+        context.transitionTo(new CandidateRole());
+    }
 
+    @Override
+    public RequestVoteResponse handleRequestVote(RaftState context, RequestVoteRequest request) {
         if (request.term() < context.getCurrentTerm()) {
             return new RequestVoteResponse(context.getCurrentTerm(), false);
         }
-
         if (request.term() > context.getCurrentTerm()) {
-            context.setCurrentTerm(request.term());
-            context.setVotedFor(null);
-            stateChanged = true;
+            context.stepDown(request.term(), null);
         }
 
-        boolean canVote = (context.getVotedFor() == null || context.getVotedFor().equals(request.candidateId()));
+        boolean canVote = context.getVotedFor() == null || context.getVotedFor().equals(request.candidateId());
         long lastLogTerm = context.getRaftLog().getLastLogTerm();
         long lastLogIndex = context.getRaftLog().getLastLogIndex();
-
-        boolean isLogUpToDate = (request.lastLogTerm() > lastLogTerm) ||
-                (request.lastLogTerm() == lastLogTerm && request.lastLogIndex() >= lastLogIndex);
+        boolean isLogUpToDate = request.lastLogTerm() > lastLogTerm
+                || (request.lastLogTerm() == lastLogTerm && request.lastLogIndex() >= lastLogIndex);
 
         boolean voteGranted = canVote && isLogUpToDate;
-
         if (voteGranted) {
-            context.setVotedFor(request.candidateId());
+            // The vote is durable before the response leaves this method
+            context.grantVote(request.candidateId());
             context.resetElectionTimer();
-            stateChanged = true;
-            log.info("Voted for candidate {} in term {}", request.candidateId().asString(), request.term());
+            log.info("Voted for {} in term {}", request.candidateId().asString(), request.term());
         }
-
-        if (stateChanged) {
-            context.flushMetadata();
-        }
-
         return new RequestVoteResponse(context.getCurrentTerm(), voteGranted);
     }
 
     @Override
     public AppendEntriesResponse handleAppendEntries(RaftState context, AppendEntriesRequest request) {
         if (request.term() < context.getCurrentTerm()) {
-            return new AppendEntriesResponse(context.getCurrentTerm(), false);
+            return AppendEntriesResponse.rejected(context.getCurrentTerm(), 0, 0);
         }
-        if (request.term() > context.getCurrentTerm()) {
-            context.setCurrentTerm(request.term());
-            context.setVotedFor(null);
-        }
+        // Adopts a higher term if needed and records the sender as the leader of this term
+        context.stepDown(request.term(), request.leaderId());
         context.resetElectionTimer();
-        context.setCurrentLeader(request.leaderId());
 
         RaftLog raftLog = context.getRaftLog();
         long prevLogIndex = request.prevLogIndex();
 
-        if (prevLogIndex > 0) {
-            if (prevLogIndex == raftLog.getBaseIndex()) {
-                if (request.prevLogTerm() != raftLog.getBaseTerm()) {
-                    return new AppendEntriesResponse(context.getCurrentTerm(), false);
+        if (prevLogIndex > raftLog.getLastLogIndex()) {
+            return AppendEntriesResponse.rejected(context.getCurrentTerm(), raftLog.getLastLogIndex() + 1, 0);
+        }
+        if (prevLogIndex > raftLog.getBaseIndex()) {
+            long localTerm = raftLog.getEntry(prevLogIndex).term();
+            if (localTerm != request.prevLogTerm()) {
+                long firstOfTerm = prevLogIndex;
+                while (firstOfTerm - 1 > raftLog.getBaseIndex() && raftLog.getEntry(firstOfTerm - 1).term() == localTerm) {
+                    firstOfTerm--;
                 }
-            } else if (prevLogIndex > raftLog.getBaseIndex()) {
-                LogEntry prevEntry = raftLog.getEntry(prevLogIndex);
-                if (prevEntry == null || prevEntry.term() != request.prevLogTerm()) {
-                    log.warn("Log mismatch detected at index {}. Rejecting to force sync.", prevLogIndex);
-                    return new AppendEntriesResponse(context.getCurrentTerm(), false);
-                }
+                log.debug("Log mismatch at index {}: local term {}, leader term {}", prevLogIndex, localTerm, request.prevLogTerm());
+                return AppendEntriesResponse.rejected(context.getCurrentTerm(), firstOfTerm, localTerm);
             }
+        } else if (prevLogIndex == raftLog.getBaseIndex() && prevLogIndex > 0 && request.prevLogTerm() != raftLog.getBaseTerm()) {
+            return AppendEntriesResponse.rejected(context.getCurrentTerm(), prevLogIndex, raftLog.getBaseTerm());
         }
 
-        long currentIndex = prevLogIndex + 1;
+        long index = prevLogIndex + 1;
         for (LogEntry entry : request.entries()) {
-            if (currentIndex <= raftLog.getBaseIndex()) {
-                currentIndex++;
-                continue;
+            if (index > raftLog.getBaseIndex()) {
+                LogEntry existing = raftLog.getEntry(index);
+                if (existing != null && existing.term() != entry.term()) {
+                    raftLog.truncateFrom(index);
+                    existing = null;
+                }
+                if (existing == null) {
+                    raftLog.append(entry);
+                }
             }
-
-            LogEntry existingEntry = raftLog.getEntry(currentIndex);
-            if (existingEntry != null && existingEntry.term() != entry.term()) {
-                raftLog.truncateFrom(currentIndex);
-                existingEntry = null;
-            }
-            if (existingEntry == null) {
-                raftLog.append(entry);
-            }
-            currentIndex++;
+            index++;
         }
 
         if (request.leaderCommit() > context.getCommitIndex()) {
             long lastNewEntryIndex = prevLogIndex + request.entries().size();
-            context.setCommitIndex(Math.min(request.leaderCommit(), lastNewEntryIndex));
-            context.applyCommittedEntries();
+            long newCommitIndex = Math.min(request.leaderCommit(), lastNewEntryIndex);
+            if (newCommitIndex > context.getCommitIndex()) {
+                context.setCommitIndex(newCommitIndex);
+                context.applyCommittedEntries();
+            }
         }
 
-        return new AppendEntriesResponse(context.getCurrentTerm(), true);
+        return AppendEntriesResponse.accepted(context.getCurrentTerm());
     }
 
     @Override
-    public CompletableFuture<Object> handleClientCommand(RaftState context, ClientCommandRequest request) {
+    public CompletableFuture<Object> handleClientCommand(RaftState context, ClientCommandRequest request, boolean local) {
+        return forward(context, request, local, Duration.ofMillis(context.getConfig().getCommandTimeoutMs()));
+    }
+
+    @Override
+    public CompletableFuture<Object> handleClientQuery(RaftState context, ClientQueryRequest request, boolean local) {
+        return forward(context, request, local, Duration.ofMillis(context.getConfig().getCommandTimeoutMs()));
+    }
+
+    private CompletableFuture<Object> forward(RaftState context, Object request, boolean local, Duration timeout) {
         NodeAddress leader = context.getCurrentLeader();
+        if (!local) {
+            return CompletableFuture.failedFuture(new KurinNotLeaderException(
+                    "Node " + context.getLocalAddress().asString() + " is not the leader",
+                    leader != null ? leader.asString() : null));
+        }
         if (leader == null) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Cluster has no leader yet. Try again later."));
+            return CompletableFuture.failedFuture(new KurinNoLeaderException("The cluster has no known leader yet"));
         }
 
-        log.info("I am a FOLLOWER. Forwarding request {} to LEADER ({})", request.requestId(), leader.asString());
-        return context.getNetworkClient().sendRequest(leader, request);
-    }
-
-    @Override
-    public InstallSnapshotResponse handleInstallSnapshot(RaftState context, InstallSnapshotRequest request) {
-        if (request.term() < context.getCurrentTerm()) {
-            return new InstallSnapshotResponse(context.getCurrentTerm());
-        }
-        if (request.term() > context.getCurrentTerm()) {
-            context.setCurrentTerm(request.term());
-            context.setVotedFor(null);
-        }
-        context.resetElectionTimer();
-
-        context.getStateMachine().installSnapshot(request.data());
-
-        context.getRaftLog().compact(request.lastIncludedIndex(), request.lastIncludedTerm());
-
-        context.setLastApplied(request.lastIncludedIndex());
-        context.setCommitIndex(Math.max(context.getCommitIndex(), request.lastIncludedIndex()));
-
-        context.flushMetadata();
-        log.info("Successfully installed snapshot from leader up to index {}", request.lastIncludedIndex());
-
-        return new InstallSnapshotResponse(context.getCurrentTerm());
-    }
-
-    @Override
-    public CompletableFuture<Object> handleClientQuery(RaftState context, org.kurin.raft.rpc.ClientQueryRequest request) {
-        NodeAddress leader = context.getCurrentLeader();
-        if (leader == null) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Cluster has no leader yet. Try again later."));
-        }
-        log.debug("I am a FOLLOWER. Forwarding QUERY request {} to LEADER ({})", request.requestId(), leader.asString());
-        return context.getNetworkClient().sendRequest(leader, request);
+        log.debug("Forwarding {} to leader {}", request.getClass().getSimpleName(), leader.asString());
+        CompletableFuture<Object> result = new CompletableFuture<>();
+        context.getTransport().sendRequest(leader, request, timeout).whenComplete((value, error) -> {
+            Throwable cause = error != null ? RpcResult.unwrap(error) : null;
+            if (cause instanceof KurinNotLeaderException notLeader
+                    && notLeader.leaderHint() != null && !notLeader.leaderHint().equals(leader.asString())) {
+                // The leader changed under us: one retry at the node it pointed to, with the same request id
+                NodeAddress hinted = NodeAddress.parse(notLeader.leaderHint());
+                log.debug("{} is no longer the leader. Retrying at {}", leader.asString(), hinted.asString());
+                context.getTransport().sendRequest(hinted, request, timeout).whenComplete((retryValue, retryError) -> {
+                    if (retryError != null) {
+                        result.completeExceptionally(RpcResult.unwrap(retryError));
+                    } else {
+                        result.complete(retryValue);
+                    }
+                });
+            } else if (cause != null) {
+                result.completeExceptionally(cause);
+            } else {
+                result.complete(value);
+            }
+        });
+        return result;
     }
 }

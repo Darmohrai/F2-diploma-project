@@ -30,7 +30,8 @@ public class KurinCacheAutoConfiguration {
             ObjectProvider<CacheProvider> externalProviders,
             KurinCacheProperties props) {
 
-        KryoSerializer cacheSerializer = cacheSerializerProvider.getObject();
+        // Independent of the node serializer: the cache manager is created while the node is still being built
+        KryoSerializer cacheSerializer = KryoSerializer.standalone();
 
         List<CacheProvider> providers = new java.util.ArrayList<>(List.of(
                 new CaffeineCacheProvider(),

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
         "kurin.node.host=127.0.0.1",
         "kurin.node.port=9021",
         "kurin.node.peers=",
+        "kurin.node.storage=memory",
         "kurin.cache.storage-dir=target/test-cache/${random.uuid}"
 })
 class CacheIntegrationTest {

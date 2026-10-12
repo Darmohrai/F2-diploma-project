@@ -19,7 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @SpringBootTest(properties = {
         "kurin.node.host=127.0.0.1",
         "kurin.node.port=9011",
-        "kurin.node.peers="
+        "kurin.node.peers=",
+        "kurin.node.storage=memory"
 })
 class KurinStarterIntegrationTest {
 

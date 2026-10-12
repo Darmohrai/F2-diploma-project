@@ -3,27 +3,49 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
     <parent>
         <groupId>org.kurin</groupId>
         <artifactId>kurin-router-parent</artifactId>
-        <version>1.0.4</version>
+        <version>1.1.0</version>
     </parent>
 
     <artifactId>kurin-locks</artifactId>
     <name>Kurin Distributed Locks</name>
-    <description>Distributed Mutex and Leader Election based on Kurin Raft Core</description>
+    <description>Distributed locks, leadership and exactly-once jobs on top of Kurin Raft</description>
 
     <dependencies>
         <dependency>
             <groupId>org.kurin</groupId>
             <artifactId>core</artifactId>
-            <version>${project.version}</version>
         </dependency>
-
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.kurin</groupId>
+            <artifactId>kurin-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

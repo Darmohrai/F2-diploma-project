@@ -1,39 +1,41 @@
 package org.kurin.raft.state;
 
 import org.kurin.network.model.NodeAddress;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 public class FilePersistentMetadata implements PersistentMetadata {
-    private static final Logger log = LoggerFactory.getLogger(FilePersistentMetadata.class);
-
     private final Path filePath;
+    private final Path tempPath;
     private long currentTerm = 0;
     private NodeAddress votedFor = null;
 
-    public FilePersistentMetadata(String nodeId) {
-        this.filePath = Path.of("raft-data-" + nodeId, "metadata.bin");
+    public FilePersistentMetadata(Path dataDir) {
+        this.filePath = dataDir.resolve("metadata.bin");
+        this.tempPath = dataDir.resolve("metadata.bin.tmp");
         try {
-            Files.createDirectories(filePath.getParent());
+            Files.createDirectories(dataDir);
             if (Files.exists(filePath)) {
                 loadFromDisk();
             } else {
-                flush();
+                save(0, null);
             }
         } catch (IOException e) {
-            throw new RuntimeException("Failed to initialize persistent metadata", e);
+            throw new IllegalStateException("Cannot initialize Raft metadata in " + dataDir, e);
         }
     }
 
     private void loadFromDisk() throws IOException {
-        try (DataInputStream in = new DataInputStream(new FileInputStream(filePath.toFile()))) {
+        try (DataInputStream in = new DataInputStream(Files.newInputStream(filePath))) {
             this.currentTerm = in.readLong();
-            boolean hasVoted = in.readBoolean();
-            if (hasVoted) {
+            if (in.readBoolean()) {
                 String host = in.readUTF();
                 int port = in.readInt();
                 this.votedFor = new NodeAddress(host, port);
@@ -47,41 +49,34 @@ public class FilePersistentMetadata implements PersistentMetadata {
     }
 
     @Override
-    public void setCurrentTerm(long term) {
-        this.currentTerm = term;
-    }
-
-    @Override
     public NodeAddress getVotedFor() {
         return votedFor;
     }
 
     @Override
-    public void setVotedFor(NodeAddress address) {
-        this.votedFor = address;
-    }
-
-    @Override
-    public void flush() {
-        File tempFile = new File(filePath.toString() + ".tmp");
-
-        try (FileOutputStream fos = new FileOutputStream(tempFile);
-             DataOutputStream out = new DataOutputStream(fos)) {
-
-            out.writeLong(currentTerm);
-            out.writeBoolean(votedFor != null);
-            if (votedFor != null) {
-                out.writeUTF(votedFor.host());
-                out.writeInt(votedFor.port());
+    public void save(long term, NodeAddress votedFor) {
+        try {
+            try (FileOutputStream fos = new FileOutputStream(tempPath.toFile());
+                 DataOutputStream out = new DataOutputStream(fos)) {
+                out.writeLong(term);
+                out.writeBoolean(votedFor != null);
+                if (votedFor != null) {
+                    out.writeUTF(votedFor.host());
+                    out.writeInt(votedFor.port());
+                }
+                out.flush();
+                fos.getFD().sync();
             }
-
-            out.flush();
-            fos.getFD().sync();
-
+            try {
+                Files.move(tempPath, filePath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
-            log.error("Failed to flush metadata to disk", e);
+            throw new IllegalStateException("Cannot persist Raft term and vote to " + filePath
+                    + ". The node cannot safely take part in elections.", e);
         }
-
-        tempFile.renameTo(filePath.toFile());
+        this.currentTerm = term;
+        this.votedFor = votedFor;
     }
 }

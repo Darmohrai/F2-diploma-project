@@ -2,14 +2,19 @@ package org.kurin.raft.state;
 
 import org.kurin.network.model.NodeAddress;
 
+/**
+ * Durable {@code currentTerm} and {@code votedFor}.
+ */
 public interface PersistentMetadata {
     long getCurrentTerm();
 
-    void setCurrentTerm(long term);
-
     NodeAddress getVotedFor();
 
-    void setVotedFor(NodeAddress address);
-
-    void flush();
+    /**
+     * Stores both values durably before returning.
+     *
+     * @throws IllegalStateException if the values cannot be persisted; the node must not answer
+     *                               a vote or acknowledge a term it may forget
+     */
+    void save(long term, NodeAddress votedFor);
 }

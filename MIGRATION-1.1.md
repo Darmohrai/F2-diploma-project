@@ -1,0 +1,95 @@
+# Migrating from Kurin 1.0.x to 1.1.0
+
+1.1.0 is not wire- or disk-compatible with 1.0.x: upgrade all nodes of a cluster together and start them with
+empty data directories.
+
+## Build
+
+- All artifacts are version `1.1.0`.
+- `core` no longer brings `slf4j-simple`. Applications choose their own SLF4J binding (Spring Boot already does).
+- Kurin libraries no longer ship an `application.properties`.
+
+## Data routing moved to its own modules
+
+Routing and sharding were part of the cache modules. Depend on `kurin-data-routing-spring-boot-starter` instead of
+relying on `kurin-cache-spring-boot-starter` for them.
+
+| 1.0.x | 1.1.0 |
+|-------|-------|
+| `org.kurin.kurintieredcache.api.KurinReadOnly` | `org.kurin.routing.KurinReadOnly` |
+| `org.kurin.kurintieredcache.api.KurinShardKey` | `org.kurin.routing.KurinShardKey` |
+| `org.kurin.kurintieredcache.api.KurinRoutingContext` | `org.kurin.routing.KurinRoutingContext` |
+| `org.kurin.kurintieredcache.api.DataSourceType` | `org.kurin.routing.DataSourceType` |
+| `org.kurin.kurintieredcache.routing.ConsistentHashRing` | `org.kurin.routing.ConsistentHashRing` |
+| `org.kurin.kurintieredcache.routing.KurinShardRouter` | `org.kurin.routing.KurinShardRouter` |
+| `org.kurin.kurincachespringbootstarter.KurinRoutingDataSource` | `org.kurin.routing.spring.KurinRoutingDataSource` |
+| `org.kurin.kurincachespringbootstarter.KurinDataSourceTopology` | `org.kurin.routing.spring.KurinDataSourceTopology` |
+| `org.kurin.kurincachespringbootstarter.KurinClientIdResolver` | `org.kurin.routing.spring.KurinClientIdResolver` |
+| `org.kurin.kurincachespringbootstarter.SessionStickyManager` | `org.kurin.routing.spring.SessionStickyManager` |
+| `org.kurin.kurincachespringbootstarter.KurinRoutingAutoConfiguration` | `org.kurin.routing.spring.KurinRoutingAutoConfiguration` |
+
+## Core API
+
+### Node identity and configuration
+
+- The node id is `advertisedHost:port`. `KurinNode.Builder.localNode(host, port)` sets the advertised host;
+  `bindHost(...)` (default `0.0.0.0`) sets the listening interface.
+- The peer list may contain the node itself; it is filtered out. Give every node the same list.
+- `advertisedHost` is required as soon as a peer is not a loopback address.
+- Durable state lives in `./kurin-data/<host>-<port>` unless `dataDir` is set. The old `raft-data-<port>` directory
+  is not read.
+- Election timing changed: heartbeat 100 ms, election timeout 1000-2000 ms (was 50 ms and 150-300 ms). Both are
+  configurable; `electionTimeoutMin` must be at least five heartbeats.
+- Nodes must share `clusterName` (default `kurin`) and, if set, `clusterSecret`.
+
+### Commands and queries
+
+- `KurinNode.Builder.registerCommand(Class)` is gone. Parameter and result types of `@KurinCommand` / `@KurinQuery`
+  methods are registered automatically, including the types they contain. Use `registerType(Class)` only for types
+  hidden behind `Object`, a non-sealed interface or an abstract class.
+- Wire ids no longer depend on registration order. A type keeps its id as long as its fully qualified name does not
+  change; annotate it with `@KurinType(id = N)` (N >= 1000) to make the id independent of the name.
+- Nodes with different sets of registered types refuse to connect and log the reason. Deploy the same types to
+  every node.
+- `submitCommand` futures fail with subclasses of `org.kurin.api.exception.KurinException` instead of
+  `RuntimeException("Network request failed")` or `IllegalStateException`:
+
+  | Situation | Exception |
+  |-----------|-----------|
+  | The handler threw | `KurinCommandFailedException` (`causeType()`, `causeMessage()`) |
+  | No leader is known | `KurinNoLeaderException` |
+  | The contacted node is not the leader | `KurinNotLeaderException` (`leaderHint()`) |
+  | No result in time, outcome unknown | `KurinTimeoutException` |
+  | Type not registered, payload too large | `KurinSerializationException` |
+  | Connection problems | `KurinRemoteException` |
+  | Node not started or already stopped | `KurinNotStartedException` |
+
+- `submitCommand` always times out (default 5 s). Use `submitCommand(cmd, Duration)` or
+  `submitCommand(cmd, CommandOptions)`; pass a `requestId` in `CommandOptions` to retry idempotently.
+- A `void` command submitted on a follower now completes normally (it used to time out).
+- A handler exception no longer breaks the node: it is the result of the command, identical on every node.
+- Handlers must be deterministic. Replace `System.currentTimeMillis()` inside `@KurinCommand` methods with
+  `KurinCommandContext.current().timestampMs()`.
+
+### Snapshots
+
+- `@KurinSnapshot` methods must take no parameters and return `byte[]`; `@KurinRestore` methods must take a single
+  `byte[]`. Other signatures fail at startup.
+- The part of a snapshot that belongs to a service is keyed by `@KurinService("name")` or, without it, by the fully
+  qualified class name.
+
+### Listeners and status
+
+- `KurinRoleChangeListener` is replaced by `org.kurin.raft.state.RoleChangeListener`, whose methods receive the
+  `RaftStatus` at the moment of the change.
+- `KurinNode.getRaftState()` is gone. Read `KurinNode.status()` (an immutable `RaftStatus`) instead.
+- `StateMachineListener` and `RoleChangeListener` run on the Raft thread: they must not block.
+
+## Spring starter (`kurin.node.*`)
+
+- `kurin.node.host` is the advertised host and has no default when peers are configured.
+- New: `kurin.node.storage` (`file` or `memory`), `kurin.node.data-dir`.
+- The `KryoSerializer` bean is the serializer of the node; constructing `new KryoSerializer(List)` is no longer
+  possible. Use `KryoSerializer.standalone(types...)` outside of a node.
+
+Sections for locks, cache and routing APIs are added as those phases land.

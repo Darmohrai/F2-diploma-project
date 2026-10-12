@@ -5,6 +5,8 @@ import org.kurin.network.client.KurinNetworkClient;
 import org.kurin.network.config.NetworkConfig;
 import org.kurin.network.context.NetworkContext;
 import org.kurin.network.dispatcher.MessageDispatcher;
+import org.kurin.network.model.NodeAddress;
+import org.kurin.network.serializer.KryoSerializer;
 import org.kurin.network.server.NettyServer;
 
 public class NetworkStarter {
@@ -12,9 +14,10 @@ public class NetworkStarter {
     private final NetworkContext context;
     private final NettyServer server;
 
-    public NetworkStarter(int port, MessageDispatcher dispatcher, NetworkConfig networkConfig) {
-        this.context = new NetworkContext(dispatcher, networkConfig);
-        this.server = new NettyServer(this.context, port);
+    public NetworkStarter(NodeAddress localAddress, MessageDispatcher dispatcher, NetworkConfig networkConfig,
+                          KryoSerializer serializer) {
+        this.context = new NetworkContext(localAddress, dispatcher, networkConfig, serializer);
+        this.server = new NettyServer(this.context, localAddress.port());
     }
 
     public void start() {

@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 1.1 rework in progress
+
+Branch `feature/kurin-1.1` implements `KURIN_1.1_CLAUDE_CODE_PROMPT.md` phase by phase. `PROGRESS.md` is the source of truth for what is done and why; `MIGRATION-1.1.md` lists breaking changes. Sections below that contradict `PROGRESS.md` describe 1.0.4 and are rewritten in phase 8.
+
 ## What this is
 
 Kurin is a Java 21 infrastructure framework (a university qualification project): an embedded Raft consensus core on Netty + Kryo, with tiered caching and distributed locks layered on top, each exposed through a Spring Boot starter. Project documentation in `docs/` is written in Ukrainian (several chapters are still empty stubs); log messages and code comments mix English and Ukrainian.

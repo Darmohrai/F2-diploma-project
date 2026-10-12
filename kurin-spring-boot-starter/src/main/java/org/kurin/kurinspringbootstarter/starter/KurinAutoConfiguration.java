@@ -1,15 +1,13 @@
 package org.kurin.kurinspringbootstarter.starter;
 
-import org.kurin.api.KurinCommand;
-import org.kurin.api.KurinQuery;
-import org.kurin.api.KurinRestore;
-import org.kurin.api.KurinSnapshot;
 import org.kurin.kurinspringbootstarter.events.KurinLeaderElectedEvent;
 import org.kurin.kurinspringbootstarter.events.KurinLeaderLostEvent;
 import org.kurin.kurinspringbootstarter.template.KurinTemplate;
 import org.kurin.network.serializer.KryoSerializer;
 import org.kurin.raft.KurinNode;
-import org.kurin.raft.state.KurinRoleChangeListener;
+import org.kurin.raft.RaftStatus;
+import org.kurin.raft.state.RoleChangeListener;
+import org.kurin.raft.tools.PojoStateMachine;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -19,36 +17,12 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 @AutoConfiguration
 @EnableConfigurationProperties(KurinProperties.class)
 public class KurinAutoConfiguration {
-
-    @Bean
-    public KryoSerializer kryoSerializer(ApplicationContext context) {
-        List<Class<?>> registeredClasses = new ArrayList<>();
-        for (String beanName : context.getBeanDefinitionNames()) {
-            Class<?> type = context.getType(beanName);
-            if (type != null && !type.getName().startsWith("org.springframework")) {
-                try {
-                    Object bean = context.getBean(beanName);
-                    Class<?> targetClass = AopUtils.getTargetClass(bean);
-                    for (Method method : targetClass.getDeclaredMethods()) {
-                        if (method.isAnnotationPresent(KurinCommand.class) || method.isAnnotationPresent(KurinQuery.class)) {
-                            registeredClasses.add(method.getParameterTypes()[0]);
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-        }
-        return new KryoSerializer(registeredClasses);
-    }
 
     @Bean(initMethod = "start", destroyMethod = "shutdown")
     public KurinNode kurinNode(
@@ -58,59 +32,46 @@ public class KurinAutoConfiguration {
             ApplicationEventPublisher eventPublisher) {
 
         KurinNode.Builder builder = KurinNode.builder()
-                .localNode(props.getHost(), props.getPort());
-
+                .localNode(props.getHost(), props.getPort())
+                .storage(props.getStorage());
+        if (props.getDataDir() != null) {
+            builder.dataDir(props.getDataDir());
+        }
         if (props.getPeers() != null && !props.getPeers().isEmpty()) {
             builder.addPeers(props.getPeers().toArray(new String[0]));
         }
 
-        builder.addRoleChangeListener(new KurinRoleChangeListener() {
+        builder.addRoleChangeListener(new RoleChangeListener() {
             @Override
-            public void onLeaderElected() {
+            public void onLeaderElected(RaftStatus status) {
                 eventPublisher.publishEvent(new KurinLeaderElectedEvent(this));
             }
 
             @Override
-            public void onLeaderLost() {
+            public void onLeaderLost(RaftStatus status) {
                 eventPublisher.publishEvent(new KurinLeaderLostEvent(this));
             }
         });
 
-        Set<Object> registeredServices = new HashSet<>();
         List<Object> servicesList = new ArrayList<>();
-
         for (String beanName : context.getBeanDefinitionNames()) {
             Class<?> type = context.getType(beanName);
-            if (type == null || type.getName().startsWith("org.springframework")) {
+            if (type == null || type.getName().startsWith("org.springframework") || !PojoStateMachine.isService(type)) {
                 continue;
             }
-            try {
-                Object bean = context.getBean(beanName);
-                Class<?> targetClass = AopUtils.getTargetClass(bean);
-                boolean isKurinService = false;
-
-                for (Method method : targetClass.getDeclaredMethods()) {
-                    if (method.isAnnotationPresent(KurinCommand.class) || method.isAnnotationPresent(KurinQuery.class)) {
-                        builder.registerCommand(method.getParameterTypes()[0]);
-                        isKurinService = true;
-                    } else if (method.isAnnotationPresent(KurinSnapshot.class) ||
-                            method.isAnnotationPresent(KurinRestore.class)) {
-                        isKurinService = true;
-                    }
-                }
-
-                if (isKurinService) {
-                    if (registeredServices.add(bean)) {
-                        builder.addService(bean);
-                        servicesList.add(bean);
-                    }
-                }
-            } catch (Exception ignored) {
-            }
+            Object bean = context.getBean(beanName);
+            builder.addService(bean, AopUtils.getTargetClass(bean));
+            servicesList.add(bean);
         }
 
         customizers.orderedStream().forEach(customizer -> customizer.customize(builder, servicesList));
         return builder.build();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public KryoSerializer kurinSerializer(KurinNode kurinNode) {
+        return kurinNode.serializer();
     }
 
     @Bean

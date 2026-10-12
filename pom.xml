@@ -6,11 +6,11 @@
 
     <groupId>org.kurin</groupId>
     <artifactId>kurin-router-parent</artifactId>
-    <version>1.0.4</version>
+    <version>1.1.0</version>
     <packaging>pom</packaging>
 
     <name>Kurin</name>
-    <description>Lightweight Consistent Hashing and Task Routing Framework</description>
+    <description>Embedded Raft coordination framework for multi-instance Spring applications</description>
 
     <properties>
         <java.version>21</java.version>
@@ -19,39 +19,97 @@
         <maven.compiler.parameters>true</maven.compiler.parameters>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <netty.version>4.1.107.Final</netty.version>
-        <slf4j.version>2.0.13</slf4j.version>
+        <spring-boot.version>3.2.12</spring-boot.version>
+        <kryo.version>5.6.2</kryo.version>
+        <rocksdb.version>8.8.1</rocksdb.version>
     </properties>
 
     <modules>
         <module>core</module>
+        <module>kurin-test</module>
         <module>kurin-spring-boot-starter</module>
-        <module>kurin-tiered-cache</module>
-        <module>kurin-cache-spring-boot-starter</module>
         <module>kurin-locks</module>
         <module>kurin-locks-spring-boot-starter</module>
+        <module>kurin-tiered-cache</module>
+        <module>kurin-cache-spring-boot-starter</module>
+        <module>kurin-data-routing</module>
+        <module>kurin-data-routing-spring-boot-starter</module>
     </modules>
 
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-all</artifactId>
-                <version>${netty.version}</version>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
 
             <dependency>
-                <groupId>org.slf4j</groupId>
-                <artifactId>slf4j-api</artifactId>
-                <version>${slf4j.version}</version>
+                <groupId>com.esotericsoftware.kryo</groupId>
+                <artifactId>kryo5</artifactId>
+                <version>${kryo.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.rocksdb</groupId>
+                <artifactId>rocksdbjni</artifactId>
+                <version>${rocksdb.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>org.slf4j</groupId>
-                <artifactId>slf4j-simple</artifactId>
-                <version>2.0.13</version>
+                <groupId>org.kurin</groupId>
+                <artifactId>core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-test</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-spring-boot-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-locks</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-locks-spring-boot-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-tiered-cache</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-data-routing</artifactId>
+                <version>${project.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.2.5</version>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <kurin.debug.thread-checks>true</kurin.debug.thread-checks>
+                        </systemPropertyVariables>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
 
 </project>

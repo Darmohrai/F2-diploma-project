@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
                 "kurin.node.host=127.0.0.1",
                 "kurin.node.port=9022",
                 "kurin.node.peers=",
+                "kurin.node.storage=memory",
                 "kurin.cache.storage-dir=target/test-cache/${random.uuid}"
         })
 class CacheProtectionIntegrationTest {
@@ -144,7 +145,7 @@ class CacheProtectionIntegrationTest {
 
     @Test
     void rocksDbTierKeepsTtlAndNullMarker(@TempDir Path storageDir) {
-        L2RocksDBCache cache = new L2RocksDBCache("l2-format", storageDir.toString(), new KryoSerializer(List.of()));
+        L2RocksDBCache cache = new L2RocksDBCache("l2-format", storageDir.toString(), KryoSerializer.standalone());
         try {
             long expiresAt = System.currentTimeMillis() + 60_000;
             cache.put("ttl", new CacheEntry("payload", expiresAt));

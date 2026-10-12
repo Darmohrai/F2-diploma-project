@@ -1,88 +1,200 @@
 package org.kurin.raft;
 
+import org.kurin.api.CommandOptions;
+import org.kurin.api.exception.KurinNotLeaderException;
+import org.kurin.api.exception.KurinNotStartedException;
+import org.kurin.api.exception.KurinTimeoutException;
+import org.kurin.network.client.KurinTransport;
 import org.kurin.network.config.NetworkConfig;
+import org.kurin.network.dto.RpcResult;
 import org.kurin.network.model.NodeAddress;
 import org.kurin.network.serializer.KryoSerializer;
 import org.kurin.raft.rpc.ClientCommandRequest;
-import org.kurin.raft.state.KurinRoleChangeListener;
+import org.kurin.raft.rpc.ClientQueryRequest;
 import org.kurin.raft.state.RaftState;
-import org.kurin.raft.state.StateMachine;
+import org.kurin.raft.state.RoleChangeListener;
 import org.kurin.raft.state.StateMachineListener;
 import org.kurin.raft.tools.PojoStateMachine;
+import org.kurin.serialization.KurinTypeRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
+/**
+ * A member of a Kurin cluster embedded in the application.
+ */
 public class KurinNode {
+    private static final Logger log = LoggerFactory.getLogger(KurinNode.class);
+
+    private enum Lifecycle {NEW, STARTED, STOPPED}
+
     private final RaftNode internalNode;
+    private final RaftState raftState;
+    private final KryoSerializer serializer;
+    private volatile Lifecycle lifecycle = Lifecycle.NEW;
 
-    public KurinNode(RaftNode internalNode) {
+    KurinNode(RaftNode internalNode, KryoSerializer serializer) {
         this.internalNode = internalNode;
+        this.raftState = internalNode.getRaftState();
+        this.serializer = serializer;
     }
 
-    public void start() {
+    /**
+     * @throws IllegalStateException if the node was already started or its port cannot be bound
+     */
+    public synchronized void start() {
+        if (lifecycle != Lifecycle.NEW) {
+            throw new IllegalStateException("Node " + nodeId() + " cannot be started twice");
+        }
         internalNode.start();
+        lifecycle = Lifecycle.STARTED;
+        log.info("Kurin node {} started with peers {}", nodeId(), raftState.getPeers());
     }
 
-    public void shutdown() {
+    public synchronized void shutdown() {
+        if (lifecycle == Lifecycle.STOPPED) {
+            return;
+        }
+        lifecycle = Lifecycle.STOPPED;
         internalNode.shutdown();
+        log.info("Kurin node {} stopped", nodeId());
     }
 
+    public boolean isStarted() {
+        return lifecycle == Lifecycle.STARTED;
+    }
+
+    // ---------------------------------------------------------------- commands
+
+    /**
+     * Replicates the command and applies it on every node. Waits for the node default timeout.
+     *
+     * @return the value returned by the {@code @KurinCommand} handler; the future fails with a
+     * {@link org.kurin.api.exception.KurinException}
+     */
     public <T> CompletableFuture<T> submitCommand(Object command) {
-        String uniqueId = UUID.randomUUID().toString();
-        ClientCommandRequest request = new ClientCommandRequest(uniqueId, command);
-        CompletableFuture<Object> resultFuture = new CompletableFuture<>();
+        return submitCommand(command, CommandOptions.defaults());
+    }
 
-        internalNode.getRaftState().getMailbox().submit(() -> {
-            try {
-                internalNode.getRaftState().getCurrentRole().handleClientCommand(internalNode.getRaftState(), request)
-                        .whenComplete((result, throwable) -> {
-                            if (throwable != null) {
-                                resultFuture.completeExceptionally(throwable);
-                            } else {
-                                resultFuture.complete(result);
-                            }
-                        });
-            } catch (Exception e) {
-                resultFuture.completeExceptionally(e);
-            }
-        });
+    public <T> CompletableFuture<T> submitCommand(Object command, Duration timeout) {
+        return submitCommand(command, CommandOptions.withTimeout(timeout));
+    }
 
-        return resultFuture.thenApply(res -> (T) res);
+    /**
+     * @param options request id for idempotent retries and timeout. After a {@link KurinTimeoutException} the
+     *                command may or may not have been applied; resubmitting with the same request id is safe.
+     */
+    public <T> CompletableFuture<T> submitCommand(Object command, CommandOptions options) {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        String requestId = options.requestId() != null ? options.requestId() : UUID.randomUUID().toString();
+        Duration timeout = options.timeout() != null ? options.timeout() : Duration.ofMillis(raftState.getConfig().getCommandTimeoutMs());
+        ClientCommandRequest request = new ClientCommandRequest(requestId, command);
+
+        return submit(timeout, "Command " + command.getClass().getSimpleName() + " (request " + requestId + ")",
+                () -> raftState.getCurrentRole().handleClientCommand(raftState, request, true));
     }
 
     public <T> CompletableFuture<T> submitQuery(Object query) {
-        String uniqueId = java.util.UUID.randomUUID().toString();
-        org.kurin.raft.rpc.ClientQueryRequest request = new org.kurin.raft.rpc.ClientQueryRequest(uniqueId, query);
-        CompletableFuture<Object> resultFuture = new CompletableFuture<>();
-
-        internalNode.getRaftState().getMailbox().submit(() -> {
-            try {
-                internalNode.getRaftState().getCurrentRole().handleClientQuery(internalNode.getRaftState(), request)
-                        .whenComplete((result, throwable) -> {
-                            if (throwable != null) {
-                                resultFuture.completeExceptionally(throwable);
-                            } else {
-                                resultFuture.complete(result);
-                            }
-                        });
-            } catch (Exception e) {
-                resultFuture.completeExceptionally(e);
-            }
-        });
-        return resultFuture.thenApply(res -> (T) res);
+        if (query == null) {
+            throw new IllegalArgumentException("query must not be null");
+        }
+        ClientQueryRequest request = new ClientQueryRequest(UUID.randomUUID().toString(), query);
+        return submit(Duration.ofMillis(raftState.getConfig().getCommandTimeoutMs()), "Query " + query.getClass().getSimpleName(),
+                () -> raftState.getCurrentRole().handleClientQuery(raftState, request, true));
     }
 
-    public RaftState getRaftState() {
-        return internalNode.getRaftState();
+    @SuppressWarnings("unchecked")
+    private <T> CompletableFuture<T> submit(Duration timeout, String description, Supplier<CompletableFuture<Object>> operation) {
+        CompletableFuture<Object> result = new CompletableFuture<>();
+        if (lifecycle != Lifecycle.STARTED) {
+            result.completeExceptionally(new KurinNotStartedException("Node " + nodeId()
+                    + (lifecycle == Lifecycle.NEW ? " is not started yet" : " is shut down")));
+            return (CompletableFuture<T>) result;
+        }
+
+        var timeoutTask = internalNode.getTimer().newTimeout(expired -> result.completeExceptionally(new KurinTimeoutException(
+                description + " got no result within " + timeout.toMillis() + " ms. It may still be applied.")),
+                timeout.toMillis(), TimeUnit.MILLISECONDS);
+        result.whenComplete((value, error) -> timeoutTask.cancel());
+
+        attempt(operation, result, true);
+        return (CompletableFuture<T>) result;
     }
 
-    public NodeAddress getLocalAddress() {
-        return internalNode.getRaftState().getLocalAddress();
+    private void attempt(Supplier<CompletableFuture<Object>> operation, CompletableFuture<Object> result, boolean mayRetry) {
+        try {
+            raftState.execute(() -> {
+                CompletableFuture<Object> attempt;
+                try {
+                    attempt = operation.get();
+                } catch (RuntimeException e) {
+                    attempt = CompletableFuture.failedFuture(e);
+                }
+                attempt.whenComplete((value, error) -> {
+                    Throwable cause = error != null ? RpcResult.unwrap(error) : null;
+                    if (cause instanceof KurinNotLeaderException && mayRetry && !result.isDone()) {
+                        // This node lost leadership while the request was in flight: route it once more
+                        attempt(operation, result, false);
+                    } else if (cause != null) {
+                        result.completeExceptionally(cause);
+                    } else {
+                        result.complete(value);
+                    }
+                });
+            });
+        } catch (KurinNotStartedException e) {
+            result.completeExceptionally(e);
+        }
+    }
+
+    // ---------------------------------------------------------------- status
+
+    /**
+     * @return a consistent snapshot of the node state; never blocks
+     */
+    public RaftStatus status() {
+        return raftState.status();
     }
 
     public boolean isLeader() {
-        return internalNode.getRaftState().getCurrentRole().isLeader();
+        return raftState.status().isLeader();
+    }
+
+    public String nodeId() {
+        return raftState.getLocalAddress().asString();
+    }
+
+    public NodeAddress getLocalAddress() {
+        return raftState.getLocalAddress();
+    }
+
+    public Set<NodeAddress> peers() {
+        return raftState.getPeers();
+    }
+
+    public RaftConfig config() {
+        return raftState.getConfig();
+    }
+
+    /**
+     * @return the serializer of this node, restricted to the registered types
+     */
+    public KryoSerializer serializer() {
+        return serializer;
     }
 
     public static Builder builder() {
@@ -90,38 +202,71 @@ public class KurinNode {
     }
 
     public static class Builder {
-        private String host = "127.0.0.1";
+        private String advertisedHost;
         private int port;
-        private final Set<NodeAddress> peers = new HashSet<>();
-        private StateMachine stateMachine;
-        private final NetworkConfig config = new NetworkConfig();
-
-        private final List<Object> services = new ArrayList<>();
+        private final Set<NodeAddress> peers = new LinkedHashSet<>();
+        private final RaftConfig raftConfig = new RaftConfig();
+        private final NetworkConfig networkConfig = new NetworkConfig();
+        private final KurinTypeRegistry typeRegistry = new KurinTypeRegistry();
+        private final List<PojoStateMachine.Service> services = new ArrayList<>();
         private final List<StateMachineListener> listeners = new ArrayList<>();
+        private final List<RoleChangeListener> roleListeners = new ArrayList<>();
+        private UnaryOperator<KurinTransport> transportDecorator = UnaryOperator.identity();
 
-        private final List<KurinRoleChangeListener> roleListeners = new ArrayList<>();
-
-        public Builder localNode(String host, int port) {
-            this.host = host;
+        /**
+         * @param advertisedHost the host other nodes use to reach this node; together with the port it forms the node id
+         */
+        public Builder localNode(String advertisedHost, int port) {
+            this.advertisedHost = advertisedHost;
             this.port = port;
             return this;
         }
 
-        public Builder addService(Object targetService) {
-            this.services.add(targetService);
+        /**
+         * @param bindHost the local interface to listen on, {@code 0.0.0.0} by default
+         */
+        public Builder bindHost(String bindHost) {
+            networkConfig.setBindHost(bindHost);
             return this;
         }
 
+        public Builder clusterName(String clusterName) {
+            networkConfig.setClusterName(clusterName);
+            return this;
+        }
+
+        /**
+         * Adds cluster members as {@code host:port}. The list may include this node: it is filtered out,
+         * so every node can be given the same configuration.
+         */
         public Builder addPeers(String... peerAddresses) {
-            for (String p : peerAddresses) {
-                String[] parts = p.split(":");
-                peers.add(new NodeAddress(parts[0], Integer.parseInt(parts[1])));
+            for (String peer : peerAddresses) {
+                if (peer != null && !peer.isBlank()) {
+                    peers.add(NodeAddress.parse(peer));
+                }
             }
             return this;
         }
 
-        public Builder registerCommand(Class<?> commandClass) {
-            this.config.registerClass(commandClass);
+        public Builder addService(Object service) {
+            this.services.add(PojoStateMachine.Service.of(service));
+            return this;
+        }
+
+        /**
+         * Adds a service whose annotated methods are declared by {@code type}, for instances that are proxies.
+         */
+        public Builder addService(Object service, Class<?> type) {
+            this.services.add(new PojoStateMachine.Service(service, type));
+            return this;
+        }
+
+        /**
+         * Registers a type that travels inside commands, queries or results but cannot be discovered from
+         * their declarations (for example an implementation behind an interface-typed field).
+         */
+        public Builder registerType(Class<?> type) {
+            typeRegistry.register(type);
             return this;
         }
 
@@ -130,29 +275,112 @@ public class KurinNode {
             return this;
         }
 
-        public Builder addRoleChangeListener(org.kurin.raft.state.KurinRoleChangeListener listener) {
+        public Builder addRoleChangeListener(RoleChangeListener listener) {
             this.roleListeners.add(listener);
             return this;
         }
 
+        public Builder storage(RaftConfig.StorageType storage) {
+            raftConfig.setStorage(storage);
+            return this;
+        }
+
+        public Builder dataDir(java.nio.file.Path dataDir) {
+            raftConfig.setDataDir(dataDir);
+            return this;
+        }
+
+        /**
+         * Wraps the transport used to reach peers. Meant for fault injection in tests.
+         */
+        public Builder transportDecorator(UnaryOperator<KurinTransport> transportDecorator) {
+            this.transportDecorator = transportDecorator;
+            return this;
+        }
+
+        public RaftConfig raftConfig() {
+            return raftConfig;
+        }
+
+        public NetworkConfig networkConfig() {
+            return networkConfig;
+        }
+
+        public KurinTypeRegistry typeRegistry() {
+            return typeRegistry;
+        }
+
+        /**
+         * Validates the configuration, freezes the type registry and creates the node without starting it.
+         *
+         * @throws IllegalArgumentException on invalid configuration
+         * @throws IllegalStateException    on invalid handler methods or conflicting type ids
+         */
         public KurinNode build() {
-            if (port == 0 || services.isEmpty()) {
-                throw new IllegalArgumentException("Port and at least one Service must be configured");
+            if (port <= 0 || port > 65535) {
+                throw new IllegalArgumentException("A node port between 1 and 65535 must be configured, got " + port);
             }
-
-            KryoSerializer serializer = new KryoSerializer(config.getRegisteredClasses());
-            PojoStateMachine pojoStateMachine = new PojoStateMachine(services, serializer);
-
-            for (StateMachineListener listener : listeners) {
-                pojoStateMachine.addListener(listener);
+            if (services.isEmpty()) {
+                throw new IllegalArgumentException("At least one service with @KurinCommand or @KurinQuery methods must be registered");
             }
+            NodeAddress self = resolveSelf();
+            Set<NodeAddress> otherPeers = new LinkedHashSet<>(peers);
+            otherPeers.remove(self);
+            warnIfLoopbackAdvertised(self, otherPeers);
 
-            this.stateMachine = pojoStateMachine;
+            if (raftConfig.getMaxAppendBytes() <= 0) {
+                raftConfig.setMaxAppendBytes(networkConfig.getMaxPayloadSize() / 2);
+            }
+            if (raftConfig.getMaxAppendBytes() > networkConfig.getMaxPayloadSize()) {
+                throw new IllegalArgumentException("maxAppendBytes (" + raftConfig.getMaxAppendBytes()
+                        + ") must not exceed maxPayloadSize (" + networkConfig.getMaxPayloadSize() + ")");
+            }
+            raftConfig.validate();
 
-            NodeAddress localAddress = new NodeAddress(host, port);
+            PojoStateMachine stateMachine = new PojoStateMachine(services);
+            stateMachine.messageHandlerMethods().forEach(typeRegistry::registerHandler);
+            typeRegistry.freeze();
+            KryoSerializer serializer = new KryoSerializer(typeRegistry);
+            stateMachine.bindSerializer(serializer);
+            listeners.forEach(stateMachine::addListener);
 
-            RaftNode node = new RaftNode(localAddress, peers, stateMachine, config, roleListeners);
-            return new KurinNode(node);
+            RaftNode node = new RaftNode(self, otherPeers, stateMachine, raftConfig, networkConfig, serializer,
+                    roleListeners, transportDecorator);
+            return new KurinNode(node, serializer);
+        }
+
+        private NodeAddress resolveSelf() {
+            if (advertisedHost != null && !advertisedHost.isBlank()) {
+                return new NodeAddress(advertisedHost.trim(), port);
+            }
+            if (peers.stream().allMatch(peer -> isLoopback(peer.host()))) {
+                // Single node or an all-local cluster: loopback is the only sensible identity
+                return new NodeAddress("127.0.0.1", port);
+            }
+            throw new IllegalArgumentException("advertisedHost must be set when peers are configured: "
+                    + "it is the address other nodes use to reach this node and part of its identity");
+        }
+
+        private static void warnIfLoopbackAdvertised(NodeAddress self, Set<NodeAddress> otherPeers) {
+            if (isLoopback(self.host()) && otherPeers.stream().anyMatch(peer -> !isLoopback(peer.host()))) {
+                log.warn("Node advertises the loopback address {} but has non-local peers {}. "
+                        + "Other machines will not be able to connect back to it.", self.asString(), otherPeers);
+            }
+        }
+
+        private static boolean isLoopback(String host) {
+            if ("localhost".equalsIgnoreCase(host)) {
+                return true;
+            }
+            // Only literal addresses are checked: resolving names here could block on DNS
+            if (!host.matches("[0-9.]+") && !host.contains(":")) {
+                return false;
+            }
+            try {
+                return InetAddress.getByName(host).isLoopbackAddress();
+            } catch (UnknownHostException e) {
+                return false;
+            }
         }
     }
 }
