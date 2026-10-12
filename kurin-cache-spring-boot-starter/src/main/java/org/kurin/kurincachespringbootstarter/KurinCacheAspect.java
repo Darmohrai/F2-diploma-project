@@ -4,169 +4,218 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
-import org.kurin.kurinlocks.api.KurinLockManager;
+import org.kurin.api.KurinCommand;
+import org.kurin.kurintieredcache.api.KurinCacheEvict;
+import org.kurin.kurintieredcache.api.KurinCacheInvalidator;
+import org.kurin.kurintieredcache.api.KurinCachePut;
 import org.kurin.kurintieredcache.api.KurinCacheable;
-import org.kurin.kurintieredcache.core.KurinCache;
-import org.kurin.kurintieredcache.core.KurinCacheManager;
-import org.kurin.kurintieredcache.core.KurinNullValue;
+import org.kurin.kurintieredcache.core.CacheReader;
+import org.kurin.kurintieredcache.core.CacheReader.ReadOptions;
+import org.kurin.kurintieredcache.core.CacheSettings;
+import org.kurin.kurintieredcache.core.CacheValueGuard;
+import org.kurin.kurintieredcache.core.TieredCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.expression.ExpressionParser;
-import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.annotation.Order;
+import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.UndeclaredThrowableException;
+import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
+/**
+ * Applies the cache annotations to ordinary bean methods. On {@code @KurinCommand} handlers
+ * {@code @KurinCachePut} and {@code @KurinCacheEvict} are applied by {@link CommandCacheListener} instead,
+ * when the command is applied on each instance.
+ * <p>
+ * The aspect runs outside of the transaction advice. By the time an advised transactional method returns
+ * here, its transaction has committed, and if it rolled back an exception passes through instead.
+ */
 @Aspect
+@Order(Ordered.HIGHEST_PRECEDENCE + 300)
 public class KurinCacheAspect {
     private static final Logger log = LoggerFactory.getLogger(KurinCacheAspect.class);
+    private static final boolean TRANSACTIONS_PRESENT = ClassUtils.isPresent(
+            "org.springframework.transaction.support.TransactionSynchronizationManager", KurinCacheAspect.class.getClassLoader());
 
-    private final KurinCacheManager cacheManager;
-    private final ObjectProvider<KurinLockManager> lockManagerProvider;
-    private final ExpressionParser parser = new SpelExpressionParser();
-
-    public KurinCacheAspect(KurinCacheManager cacheManager, ObjectProvider<KurinLockManager> lockManagerProvider) {
-        this.cacheManager = cacheManager;
-        this.lockManagerProvider = lockManagerProvider;
+    /**
+     * Everything about a {@code @KurinCacheable} method that does not change between calls.
+     */
+    private record CacheablePlan(String cacheName, List<org.kurin.kurintieredcache.api.CacheTier> tiers, CacheSettings settings,
+                                 Duration lockWait) {
     }
 
-    @Around("@annotation(kurinCacheable)")
-    public Object handleCacheable(ProceedingJoinPoint joinPoint, KurinCacheable kurinCacheable) throws Throwable {
-        String cacheName = kurinCacheable.cacheName();
-        KurinCache cache = cacheManager.getOrCreateCache(cacheName, kurinCacheable.tier());
+    private final CacheAnnotationSupport support;
+    private final CacheReader reader;
+    private final KurinCacheInvalidator invalidator;
+    private final Map<Method, CacheablePlan> cacheablePlans = new ConcurrentHashMap<>();
 
-        String key = parseSpelKey(joinPoint, kurinCacheable.key());
-
-        Object cachedValue = cache.get(key);
-        if (cachedValue != null) {
-            log.debug("[Spring AOP] Cache HIT for key '{}' in cache '{}'", key, cacheName);
-            return unwrapNull(cachedValue);
-        }
-
-        if (!kurinCacheable.preventStampede()) {
-            return proceedAndCache(joinPoint, cache, key, kurinCacheable);
-        }
-
-        KurinLockManager lockManager = lockManagerProvider.getIfAvailable();
-        if (lockManager == null) {
-            log.warn("[Spring AOP] preventStampede=true, but KurinLockManager is not available! Proceeding normally.");
-            return proceedAndCache(joinPoint, cache, key, kurinCacheable);
-        }
-
-        String lockKey = "lock:stampede:" + cacheName + ":" + key;
-        long ttlMs = kurinCacheable.stampedeLockTtlMs();
-        // By this time the lock of the previous holder has expired, so waiting longer is pointless
-        long waitDeadline = System.currentTimeMillis() + ttlMs;
-
-        while (System.currentTimeMillis() < waitDeadline) {
-            java.util.Optional<org.kurin.kurinlocks.api.LockHandle> handle = lockManager.tryLock(lockKey, java.time.Duration.ofMillis(ttlMs));
-            boolean acquired = handle.isPresent();
-
-            if (acquired) {
-                try {
-                    cachedValue = cache.get(key);
-                    if (cachedValue != null) {
-                        log.debug("[Spring AOP] Cache HIT (Double-Checked) for key '{}'", key);
-                        return unwrapNull(cachedValue);
-                    }
-
-                    log.debug("[Spring AOP] Cache MISS. Fetching from DB with lock for key '{}'", key);
-                    return proceedAndCache(joinPoint, cache, key, kurinCacheable);
-                } finally {
-                    handle.get().release();
-                }
-            } else {
-                log.debug("[Spring AOP] Lock occupied for key '{}', waiting...", key);
-                try {
-                    Thread.sleep(150);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for lock", e);
-                }
-
-                cachedValue = cache.get(key);
-                if (cachedValue != null) {
-                    return unwrapNull(cachedValue);
-                }
-            }
-        }
-
-        log.warn("[Spring AOP] Could not acquire stampede lock for key '{}' within {} ms. Proceeding without lock.", key, ttlMs);
-        return proceedAndCache(joinPoint, cache, key, kurinCacheable);
+    public KurinCacheAspect(CacheAnnotationSupport support, CacheReader reader, KurinCacheInvalidator invalidator) {
+        this.support = support;
+        this.reader = reader;
+        this.invalidator = invalidator;
     }
 
-    private Object proceedAndCache(ProceedingJoinPoint joinPoint, KurinCache cache, String key, KurinCacheable config) throws Throwable {
+    // ---------------------------------------------------------------- @KurinCacheable
+
+    @Around("@annotation(cacheable)")
+    public Object handleCacheable(ProceedingJoinPoint joinPoint, KurinCacheable cacheable) throws Throwable {
+        Method method = targetMethod(joinPoint);
+        Object target = joinPoint.getTarget();
+        Object[] arguments = joinPoint.getArgs();
+
+        if (!cacheable.condition().isEmpty()
+                && !support.expressions().condition(cacheable.condition(), method, target, arguments, CacheExpressions.NO_RESULT)) {
+            return joinPoint.proceed();
+        }
+
+        CacheablePlan plan = cacheablePlans.computeIfAbsent(method, m -> cacheablePlan(cacheable));
+        TieredCache cache = support.manager().getCache(plan.cacheName(), plan.tiers());
+        String key = support.readKey(cacheable.key(), method, target, arguments);
+
+        Predicate<Object> unless = cacheable.unless().isEmpty() ? null
+                : result -> support.expressions().condition(cacheable.unless(), method, target, arguments, result);
+        ReadOptions options = new ReadOptions(plan.settings(), cacheable.cacheNulls(), cacheable.stampede(), plan.lockWait(),
+                cacheable.onLockTimeout(), unless);
+
+        try {
+            return reader.read(cache, key, options, () -> proceedWrapping(joinPoint));
+        } catch (UndeclaredThrowableException e) {
+            throw e.getUndeclaredThrowable();
+        }
+    }
+
+    private CacheablePlan cacheablePlan(KurinCacheable cacheable) {
+        CacheSettings settings = support.manager().settingsOf(cacheable.cacheName());
+        if (!cacheable.ttl().isEmpty()) {
+            settings = settings.withTtl(CacheAnnotationSupport.parseDuration(cacheable.ttl()));
+        }
+        if (!cacheable.nullTtl().isEmpty()) {
+            settings = settings.withNullTtl(CacheAnnotationSupport.parseDuration(cacheable.nullTtl()));
+        }
+        if (cacheable.jitterPercent() >= 0) {
+            settings = settings.withJitterPercent(cacheable.jitterPercent());
+        }
+        if (!cacheable.staleWhileRevalidate().isEmpty()) {
+            settings = settings.withStaleWhileRevalidate(CacheAnnotationSupport.parseDuration(cacheable.staleWhileRevalidate()));
+        }
+        return new CacheablePlan(cacheable.cacheName(), Arrays.asList(cacheable.tiers()), settings,
+                CacheAnnotationSupport.parseDuration(cacheable.lockWait()));
+    }
+
+    // ---------------------------------------------------------------- @KurinCachePut
+
+    @Around("@annotation(cachePut)")
+    public Object handleCachePut(ProceedingJoinPoint joinPoint, KurinCachePut cachePut) throws Throwable {
+        Method method = targetMethod(joinPoint);
         Object result = joinPoint.proceed();
+        if (isCommandHandler(method) || result == null) {
+            return result;
+        }
+        try {
+            String key = support.writeKey(cachePut.key(), method, joinPoint.getTarget(), joinPoint.getArgs(), result);
+            CacheValueGuard.check(cachePut.cacheName(), result);
+            CacheSettings settings = support.settings(cachePut.cacheName(), cachePut.ttl());
+            support.manager().getCache(cachePut.cacheName()).put(key, settings.newEntry(result, System.currentTimeMillis()));
+        } catch (RuntimeException e) {
+            // The method has done its work; a cache that was not updated must not turn that into a failure
+            log.warn("Result of {} was not cached: {}", CacheExpressions.describe(method), e.toString());
+        }
+        return result;
+    }
 
-        if (result != null) {
-            putValueToCache(cache, key, result, config);
+    // ---------------------------------------------------------------- @KurinCacheEvict
+
+    @Around("@annotation(cacheEvict)")
+    public Object handleCacheEvict(ProceedingJoinPoint joinPoint, KurinCacheEvict cacheEvict) throws Throwable {
+        Method method = targetMethod(joinPoint);
+        Object result = joinPoint.proceed();
+        if (isCommandHandler(method)) {
             return result;
         }
 
-        if (config.cacheNulls()) {
-            log.debug("[Spring AOP] DB returned null, caching KurinNullValue for key '{}'", key);
-            putValueToCache(cache, key, KurinNullValue.INSTANCE, config);
-        }
+        String key = cacheEvict.allEntries() ? null
+                : support.writeKey(cacheEvict.key(), method, joinPoint.getTarget(), joinPoint.getArgs(), result);
+        Runnable eviction = () -> evict(cacheEvict, key, method);
 
-        return null;
-    }
-
-    private void putValueToCache(KurinCache cache, String key, Object value, KurinCacheable config) {
-        int jitter = config.jitter();
-        if (jitter > 0) {
-            cache.putWithJitter(key, value, jitter);
+        if (TRANSACTIONS_PRESENT && AfterCommit.isTransactionActive()) {
+            // Called inside a surrounding transaction: its outcome is not known yet
+            AfterCommit.run(eviction);
         } else {
-            cache.put(key, value);
+            eviction.run();
         }
+        return result;
     }
 
-    private Object unwrapNull(Object cachedValue) {
-        if (cachedValue instanceof KurinNullValue || cachedValue == KurinNullValue.INSTANCE) {
-            return null;
-        }
-        return cachedValue;
-    }
-
-    private String parseSpelKey(ProceedingJoinPoint joinPoint, String spelExpression) {
-        if (spelExpression == null || spelExpression.trim().isEmpty()) {
-            return generateDefaultKey(joinPoint);
-        }
-
-        StandardEvaluationContext context = new StandardEvaluationContext();
-        Object[] args = joinPoint.getArgs();
-        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
-        String[] paramNames = signature.getParameterNames();
-
-        // Positional aliases work even when the code is compiled without -parameters
-        for (int i = 0; i < args.length; i++) {
-            context.setVariable("a" + i, args[i]);
-            context.setVariable("p" + i, args[i]);
-            if (paramNames != null) {
-                context.setVariable(paramNames[i], args[i]);
+    private void evict(KurinCacheEvict cacheEvict, String key, Method method) {
+        for (String cacheName : cacheEvict.cacheNames()) {
+            try {
+                if (cacheEvict.replicate()) {
+                    (key == null ? invalidator.evictAll(cacheName) : invalidator.evict(cacheName, key))
+                            .whenComplete((done, error) -> {
+                                if (error != null) {
+                                    log.warn("Invalidation of cache '{}' after {} was not replicated to all instances: {}",
+                                            cacheName, CacheExpressions.describe(method), error.toString());
+                                }
+                            });
+                } else if (key == null) {
+                    support.manager().getCache(cacheName).clear();
+                } else {
+                    support.manager().getCache(cacheName).evict(key);
+                }
+            } catch (RuntimeException e) {
+                log.error("Cache '{}' could not be invalidated after {}", cacheName, CacheExpressions.describe(method), e);
             }
         }
-
-        String key;
-        try {
-            key = parser.parseExpression(spelExpression).getValue(context, String.class);
-        } catch (Exception e) {
-            return spelExpression;
-        }
-
-        if (key == null) {
-            log.warn("[Spring AOP] Key expression '{}' evaluated to null for method {} (compiled without -parameters?). Using default key.",
-                    spelExpression, signature.getName());
-            return generateDefaultKey(joinPoint);
-        }
-        return key;
     }
 
-    private String generateDefaultKey(ProceedingJoinPoint joinPoint) {
-        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
-        Method method = signature.getMethod();
-        Object[] args = joinPoint.getArgs();
-        return method.getName() + ":" + (args == null ? 0 : Arrays.hashCode(args));
+    /**
+     * Kept apart so that the transaction classes are touched only when spring-tx is on the classpath.
+     */
+    private static final class AfterCommit {
+        static boolean isTransactionActive() {
+            return org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()
+                    && org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
+        }
+
+        static void run(Runnable action) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            action.run();
+                        }
+                    });
+        }
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private static Method targetMethod(ProceedingJoinPoint joinPoint) {
+        Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+        return joinPoint.getTarget() != null ? AopUtils.getMostSpecificMethod(method, joinPoint.getTarget().getClass()) : method;
+    }
+
+    private static boolean isCommandHandler(Method method) {
+        return AnnotatedElementUtils.hasAnnotation(method, KurinCommand.class);
+    }
+
+    // A checked Throwable of the advised method crosses the Callable-based reader wrapped, and is unwrapped by the caller
+    private static Object proceedWrapping(ProceedingJoinPoint joinPoint) throws Exception {
+        try {
+            return joinPoint.proceed();
+        } catch (Exception | Error e) {
+            throw e;
+        } catch (Throwable t) {
+            throw new UndeclaredThrowableException(t);
+        }
     }
 }

@@ -24,6 +24,16 @@ public final class KryoRegistrations {
     private KryoRegistrations() {
     }
 
+    /**
+     * Teaches a Kryo instance to handle the JDK types that its built-in defaults cannot: immutable collections
+     * ({@code List.of} and friends), {@code Collections.unmodifiable*} views and {@code UUID}. For serializers
+     * that do not use a {@link KurinTypeRegistry}.
+     */
+    public static void addJdkDefaultSerializers(Kryo kryo) {
+        com.esotericsoftware.kryo.kryo5.serializers.ImmutableCollectionsSerializers.addDefaultSerializers(kryo);
+        CUSTOM_SERIALIZERS.forEach((type, serializer) -> kryo.addDefaultSerializer(type, serializer.get()));
+    }
+
     public static void apply(Kryo kryo, Map<Integer, Class<?>> types) {
         types.forEach((id, type) -> {
             Supplier<Serializer<?>> custom = CUSTOM_SERIALIZERS.get(type);

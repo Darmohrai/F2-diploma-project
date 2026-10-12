@@ -167,4 +167,58 @@ relying on `kurin-cache-spring-boot-starter` for them.
   `kurin.locks.command-timeout`. New: `kurin.locks.purge-interval`, `kurin.jobs.history-size`,
   `kurin.jobs.command-timeout`.
 
-Sections for the cache and routing APIs are added as those phases land.
+## Cache
+
+The cache was rewritten. Data in 1.0.x disk tiers is not read; delete the old cache directories.
+
+### Annotations
+
+- `@KurinCacheable`:
+
+  | 1.0.x | 1.1.0 |
+  |-------|-------|
+  | `tier = CacheTier.TIERED_SMART` | `tiers = {}` (default: the configured tiers) or `tiers = {CacheTier.L1, CacheTier.L2}` |
+  | `preventStampede = true`, `stampedeLockTtlMs` | `stampede = StampedeMode.CLUSTER`, `lockWait = "PT5S"`, `onLockTimeout` |
+  | `jitter = 20` | `jitterPercent = 20` |
+  | - | `ttl`, `nullTtl`, `condition`, `unless`, `staleWhileRevalidate` |
+
+  `stampede` defaults to `LOCAL`: concurrent misses of one key on one instance now share a single load.
+- `key` is always SpEL. A constant key must be quoted (`key = "'all'"`). An expression that fails or yields null
+  throws `KurinCacheKeyException`; it used to become one literal key shared by all calls.
+- The default key changed from `method:hash(args)` to `Class.method(arg1,arg2,...)`. Arguments must be strings,
+  numbers, booleans, enums, UUIDs, `java.time` values, records, collections, maps or arrays of those; for other
+  types give an explicit `key`.
+- `@KurinCacheEvict(cacheName = "x")` becomes `@KurinCacheEvict(cacheNames = "x")`. It may now be put on ordinary
+  methods: it then evicts after the method (after commit, inside a transaction) on all instances.
+- `@KurinCachePut` and `@KurinCacheEvict` need a `key` expression unless the first parameter implements
+  `CacheKeyProvider` (or `allEntries` is set). `command.toString()` is no longer used as a key.
+- Misused annotations (unparsable expression or duration, `cacheNulls` on a primitive, a void `@KurinCacheable`)
+  fail the application startup.
+
+### Configuration
+
+- Without configuration a value now lives 10 minutes (`kurin.cache.defaults.ttl`). Before, values without `jitter`
+  never expired in L2 and lived 15 minutes after last access in L1.
+- `kurin.cache.storage-dir` becomes `kurin.cache.data-dir` and defaults to `<node data dir>/cache`.
+- `kurin.cache.l1-max-size`, `l1-expire-minutes` become `kurin.cache.defaults.l1-max-size` and
+  `kurin.cache.defaults.ttl`; both can be set per cache under `kurin.cache.caches.<name>`.
+- `kurin.cache.l3-max-failures`, `l3-circuit-open-timeout-ms` become `kurin.cache.l3.failure-threshold` and
+  `kurin.cache.l3.open-duration`; `kurin.cache.l3.timeout` (default 100 ms) is new.
+- With a shared external store, `kurin.cache.codec.allowed-packages` must list the packages of the cached classes.
+
+### SPI
+
+- `CacheProvider`, `CacheConfigurationContext`, `DefaultKurinCacheManager`, `TieredCompositeCache`,
+  `FaultTolerantCacheDecorator`, `RaftCacheUpdater` and `KurinCacheProxy` are removed.
+- An external tier is no longer a `CacheProvider` bean for `L3_EXTERNAL` but an `ExternalCacheStore` bean that
+  stores bytes: `get`, `put(key, bytes, ttl)`, `delete`, `deleteByPrefix`, `isShared`. It needs no serializer.
+- `KurinCacheManager` is a class built with `KurinCacheManager.builder()`; `getOrCreateCache(name, tier)` becomes
+  `getCache(name)`, which returns a `TieredCache`.
+- `KurinCache.get` returns a `CacheLookup` (entry plus tier) instead of the raw value, `put` takes a `CacheEntry`,
+  and `putWithJitter` is gone: the lifetime comes from `CacheSettings.newEntry`.
+- `CacheEntry` has four components (`payload`, `createdAtMs`, `expiresAtMs`, `staleUntilMs`).
+- `CacheTier` values are `L1`, `L2`, `L3`.
+- New: `KurinCacheInvalidator`, `KurinCacheObserver`, `KurinCacheTrace`, `KurinCacheValueCodec`, `KeyGenerator`,
+  `CacheClusterLock`.
+
+The section for the routing API is added when that phase lands.

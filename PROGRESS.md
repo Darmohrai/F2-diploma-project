@@ -10,7 +10,7 @@ Work follows `KURIN_1.1_CLAUDE_CODE_PROMPT.md` phase by phase. Each phase ends w
 | 3 | Snapshots, compaction, file persistence | done |
 | 4 | Spring integration of the core | done |
 | 5 | Locks, leadership tasks, exactly-once jobs | done |
-| 6 | Cache | pending |
+| 6 | Cache | done |
 | 7 | Data routing | pending |
 | 8 | Observability, documentation | pending |
 
@@ -242,3 +242,71 @@ options, read/write routing, shard router). Phase 1 builds on it.
   this. `KurinTestCluster.awaitInSync` was added for tests that need all nodes caught up.
 - **`KurinTestCluster.awaitLeader` now also requires a majority to follow the leader.** A leader that was just cut
   off keeps a valid lease for a moment and was returned as "the leader" by a test.
+
+## Phase 6
+
+### Done
+
+- **Entry model and TTL in every tier (7.1).** One `CacheEntry(payload, createdAtMs, expiresAtMs, staleUntilMs)`
+  travels through all tiers. L1 uses a per-entry Caffeine `Expiry`; L2 keeps the expiry in the encoded header,
+  checks it on read and sweeps expired entries in bounded batches; L3 receives the remaining lifetime as its TTL.
+  `kurin.cache.defaults.*` and `kurin.cache.caches.<name>.*` with `ttl`, `null-ttl`, `jitter-percent`,
+  `stale-while-revalidate`, `l1-max-size`, `tiers`; annotation attributes win. Jitter is uniform over
+  `ttl ± ttl * percent / 100`. The hard-coded one hour TTL is gone.
+- **SPI (7.2).** `KurinCache` with `CacheLookup get`, `put(key, CacheEntry)`, `evict`, a real `clear()`, `close()`.
+  `ExternalCacheStore` works on bytes under `kurin:<cache>:<key>` and declares `isShared()`. The disk tier clears
+  with `deleteRange`, lives under the node data directory and uses LZ4.
+- **Codec (7.3).** `KurinCacheValueCodec` SPI and `KryoCacheCodec`: its own Kryo without registration, header with
+  magic, version, flags, `createdAt`, `expiresAt`, `staleUntil`. With `kurin.cache.codec.allowed-packages` it
+  refuses every class outside those packages and a fixed set of JDK types, on write and on read; a shared external
+  store without that list fails at startup. Hibernate proxies and lazy collections are refused with a clear message.
+- **Keys (7.4).** SpEL keys with `#name`, `#a0`/`#p0`, `#cmd`, `#root.methodName`, `#root.target`, `#result`; a
+  failing or null expression throws `KurinCacheKeyException`; parsed expressions are cached. The default key is
+  `Class.method(args)` rendered by `CacheKeyRenderer`, collision-free for the supported types; other types are
+  refused. `KeyGenerator` SPI.
+- **Annotations (7.5).** `@KurinCacheable` (`tiers`, `ttl`, `nullTtl`, `jitterPercent`, `cacheNulls`, `condition`,
+  `unless`, `staleWhileRevalidate`, `stampede`, `lockWait`, `onLockTimeout`), `@KurinCachePut`, `@KurinCacheEvict`
+  (`cacheNames[]`, `key`, `allEntries`, `replicate`). On command handlers put and evict run on every instance at
+  apply; on ordinary methods evict runs after the method, or after commit of a surrounding transaction.
+- **Replicated invalidation (7.6).** `CacheInvalidationStateMachine` with `EvictCacheCommand`; the origin cleans
+  the shared tier, then replicates; every instance drops its local tiers on apply. `KurinCacheInvalidator` returns
+  a future completed when the invalidation is applied on the calling instance. `InvalidationEpochs` keeps a load
+  that started before an invalidation from writing its result.
+- **Writes per tier (7.7).** L1 and L2 synchronously; L3 through a striped executor that preserves the order of
+  operations per key. A hit in a lower tier is copied up unchanged.
+- **Stampede protection (7.8).** `LOCAL` single flight, `CLUSTER` single flight plus cluster lock with a re-check
+  that includes the shared tier, `onLockTimeout = LOAD | FAIL | STALE`, stale-while-revalidate with one background
+  refresh whose failure keeps the stale value.
+- **L3 resilience (7.9).** Per-call timeout, circuit breaker with `CLOSED / OPEN / HALF_OPEN` and a single probe,
+  failures never reach the caller.
+- **Visibility (7.10).** `KurinCacheObserver`, `KurinCacheTrace`, optional `X-Kurin-Cache` servlet filter.
+  Micrometer metrics follow in phase 8.
+- **Removed (7.11).** `KurinCacheProxy`, the old `CacheProvider`, `TieredCompositeCache`, `FaultTolerantCacheDecorator`.
+- **Tests.** Spec tests 18, 20, 22 and the local parts of 19 and 21 in `kurin-tiered-cache`; 17, the cluster part of
+  21, 23, 24 and the external part of 19 in the cache starter (`CacheClusterTest`, `ExternalTierTest`).
+
+### Decisions and deviations
+
+- **`CacheProvider` was dropped instead of rewritten.** With L1 and L2 built in and L3 behind `ExternalCacheStore`
+  there is nothing left for a provider to supply; a second extension point for the same thing would only confuse.
+- **`CacheTier` is now `L1`, `L2`, `L3`.** `TIERED_SMART` is expressed as a list of tiers.
+- **An instance also deletes from the shared tier what it recently wrote there itself.** The spec lets only the
+  origin clean the shared tier, before the command. That leaves a hole: an instance that read the old value from the
+  database just before the write can store it in the shared tier after the origin cleaned it, and nobody removes it
+  again. Each instance therefore remembers for a minute which keys it wrote to the shared tier and deletes those
+  when it applies an invalidation for them. The common case stays at one delete.
+- **Invalidations missed through a snapshot clear the local tiers.** The invalidation state machine replicates
+  only a counter. Each instance stores next to its disk tier how many invalidations it applied; if a snapshot
+  brings a different number, the instance cannot know which keys it missed and drops its local cache data. With an
+  in-memory Raft log the disk tier is cleared at start for the same reason.
+- **Tests that need the shared store live in the cache starter module.** `InMemorySharedExternalStore` is in
+  `kurin-test` as the spec asks, so `kurin-test` depends (optionally) on `kurin-tiered-cache`, and the plain cache
+  module cannot depend on `kurin-test` in turn.
+- **Command handlers evict the shared tier on every instance.** Each instance applies the command and none is "the
+  origin"; repeated deletes are harmless.
+- **`@KurinCacheEvict` on an ordinary method does not wait for replication.** The calling instance and the shared
+  tier are clean when the method returns; a replication failure is logged.
+- **`onLockTimeout = STALE` throws when there is no stale value**, like `FAIL`.
+- **The default stampede mode is `LOCAL`.** It costs nothing and removes the most common stampede; `NONE` and
+  `CLUSTER` are opt-in.
+- **`cacheNulls` on a primitive return type and `@KurinCacheable` on a void method fail the startup.**
