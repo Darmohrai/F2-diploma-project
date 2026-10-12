@@ -30,10 +30,19 @@ public class TieredCompositeCache implements KurinCache {
         for (int i = 0; i < tiers.size(); i++) {
             KurinCache currentTier = tiers.get(i);
             try {
-                Object value = currentTier.get(key);
-                if (value != null) {
-                    backfillTiers(key, value, i);
-                    return value;
+                Object rawValue = currentTier.get(key);
+                if (rawValue != null) {
+                    if (rawValue instanceof CacheEntry entry) {
+                        if (entry.isExpired()) {
+                            log.debug("[TieredCache] Key '{}' expired in tier {}. Evicting.", key, currentTier.getName());
+                            currentTier.evict(key);
+                            continue;
+                        }
+                        backfillTiers(key, entry, i);
+                        return entry.payload();
+                    }
+                    backfillTiers(key, rawValue, i);
+                    return rawValue;
                 }
             } catch (Exception e) {
                 log.warn("[TieredCache] Fallback: Cache tier {} failed: {}. Falling back to the next tier.", currentTier.getName(), e.getMessage());
@@ -42,25 +51,53 @@ public class TieredCompositeCache implements KurinCache {
         return null;
     }
 
+    @Override
+    public void putWithJitter(String key, Object value, int jitterPercentage) {
+        if (jitterPercentage <= 0) {
+            put(key, value);
+            return;
+        }
+
+        long baseTtlMs = 60 * 60 * 1000L;
+
+        long jitterMs = (long) (baseTtlMs * (jitterPercentage / 100.0) * (Math.random() * 2 - 1));
+        long expiresAt = System.currentTimeMillis() + baseTtlMs + jitterMs;
+
+        CacheEntry entry = new CacheEntry(value, expiresAt);
+
+        put(key, entry);
+    }
+
     private void backfillTiers(String key, Object value, int foundAtIndex) {
         for (int i = foundAtIndex - 1; i >= 0; i--) {
             try {
                 tiers.get(i).put(key, value);
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
     }
 
     @Override
     public void put(String key, Object value) {
-        CompletableFuture.runAsync(() -> {
-            for (KurinCache tier : tiers) {
-                try {
-                    tier.put(key, value);
-                } catch (Exception e) {
-                    log.warn("[TieredCache] Error writing to tier {}: {}", tier.getName(), e.getMessage());
+        // The first tier is written synchronously so that a reader arriving right after the writer
+        // (e.g. the next thread in the stampede lock queue) already sees the value.
+        putToTier(tiers.get(0), key, value);
+
+        if (tiers.size() > 1) {
+            CompletableFuture.runAsync(() -> {
+                for (KurinCache tier : tiers.subList(1, tiers.size())) {
+                    putToTier(tier, key, value);
                 }
-            }
-        });
+            });
+        }
+    }
+
+    private void putToTier(KurinCache tier, String key, Object value) {
+        try {
+            tier.put(key, value);
+        } catch (Exception e) {
+            log.warn("[TieredCache] Error writing to tier {}: {}", tier.getName(), e.getMessage());
+        }
     }
 
     @Override
@@ -90,7 +127,8 @@ public class TieredCompositeCache implements KurinCache {
         for (KurinCache tier : tiers) {
             try {
                 tier.close();
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
     }
 }

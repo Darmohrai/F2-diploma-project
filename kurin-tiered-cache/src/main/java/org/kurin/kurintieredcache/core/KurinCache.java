@@ -7,6 +7,10 @@ public interface KurinCache extends AutoCloseable {
 
     void put(String key, Object value);
 
+    default void putWithJitter(String key, Object value, int jitterPercentage) {
+        put(key, value);
+    }
+
     void evict(String key);
 
     void clear();

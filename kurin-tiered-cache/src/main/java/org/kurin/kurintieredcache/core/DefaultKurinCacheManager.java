@@ -37,7 +37,8 @@ public class DefaultKurinCacheManager implements KurinCacheManager, AutoCloseabl
                 }
                 return new TieredCompositeCache(name, tiers);
             }
-            return resolveProvider(tier).createCache(name, context);
+            // Single tiers are wrapped too, so TTL/jitter entries are handled the same way for every tier
+            return new TieredCompositeCache(name, List.of(resolveProvider(tier).createCache(name, context)));
         });
     }
 

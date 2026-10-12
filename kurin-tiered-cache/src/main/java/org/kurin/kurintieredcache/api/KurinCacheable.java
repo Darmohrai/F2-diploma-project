@@ -14,4 +14,12 @@ public @interface KurinCacheable {
     String key() default "";
 
     CacheTier tier() default CacheTier.TIERED_SMART;
+
+    boolean preventStampede() default false;
+
+    long stampedeLockTtlMs() default 5000;
+
+    boolean cacheNulls() default false;
+
+    int jitter() default 0;
 }

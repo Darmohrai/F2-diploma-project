@@ -20,7 +20,7 @@ public class KurinLockManager {
     }
 
     public boolean tryLock(String key, long ttlMs) {
-        AcquireLockCommand cmd = new AcquireLockCommand(key, localOwnerId, ttlMs);
+        AcquireLockCommand cmd = new AcquireLockCommand(key, getThreadOwnerId(), ttlMs);
         try {
             Object result = kurinNode.submitCommand(cmd).get(lockTimeoutMs, TimeUnit.MILLISECONDS);
             return Boolean.TRUE.equals(result);
@@ -33,12 +33,16 @@ public class KurinLockManager {
     }
 
     public void unlock(String key) {
-        ReleaseLockCommand cmd = new ReleaseLockCommand(key, localOwnerId);
+        ReleaseLockCommand cmd = new ReleaseLockCommand(key, getThreadOwnerId());
         try {
             kurinNode.submitCommand(cmd).get(unlockTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception ignored) {
         }
+    }
+
+    private String getThreadOwnerId() {
+        return kurinNode.getLocalAddress().asString() + "-" + Thread.currentThread().threadId();
     }
 }

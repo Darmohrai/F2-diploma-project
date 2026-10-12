@@ -1,5 +1,6 @@
 package org.kurin.kurincachespringbootstarter;
 
+import org.kurin.kurinlocks.api.KurinLockManager;
 import org.kurin.kurinspringbootstarter.starter.KurinAutoConfiguration;
 import org.kurin.kurinspringbootstarter.starter.KurinNodeBuilderCustomizer;
 import org.kurin.kurintieredcache.core.*;
@@ -50,8 +51,8 @@ public class KurinCacheAutoConfiguration {
     }
 
     @Bean
-    public KurinCacheAspect kurinCacheAspect(KurinCacheManager cacheManager) {
-        return new KurinCacheAspect(cacheManager);
+    public KurinCacheAspect kurinCacheAspect(KurinCacheManager cacheManager, ObjectProvider<KurinLockManager> lockManagerProvider) {
+        return new KurinCacheAspect(cacheManager, lockManagerProvider);
     }
 
     @Bean
