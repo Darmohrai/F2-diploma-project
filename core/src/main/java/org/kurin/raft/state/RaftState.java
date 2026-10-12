@@ -369,6 +369,8 @@ public class RaftState {
 
             CompletableFuture<Object> pending = pendingClientRequests.remove(lastApplied);
             if (pending != null) {
+                // A caller that sees its command complete must also see it in status()
+                publishStatus();
                 outcome.completeInto(pending);
             }
         }

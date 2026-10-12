@@ -118,7 +118,7 @@ class RaftPersistenceTest {
         for (int i = 0; i < 20; i++) {
             leader.kurin().submitCommand(new CounterService.Add(1)).get(5, TimeUnit.SECONDS);
         }
-        cluster.awaitApplied(leader.status().lastApplied(), Duration.ofSeconds(5));
+        cluster.awaitInSync(Duration.ofSeconds(5));
         long termBefore = follower.status().term();
 
         cluster.restart(follower);

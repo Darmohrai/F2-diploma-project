@@ -3,7 +3,7 @@ package org.kurin.kurincachespringbootstarter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.kurin.kurinlocks.api.KurinLockManager;
-import org.kurin.kurinlocks.state.DistributedLockService;
+import org.kurin.kurinlocks.state.LockStateMachine;
 import org.kurin.kurintieredcache.api.CacheTier;
 import org.kurin.kurintieredcache.api.KurinCacheable;
 import org.kurin.kurintieredcache.core.CacheEntry;
@@ -48,13 +48,13 @@ class CacheProtectionIntegrationTest {
         }
 
         @Bean
-        public DistributedLockService distributedLockService() {
-            return new DistributedLockService();
+        public LockStateMachine lockStateMachine() {
+            return new LockStateMachine();
         }
 
         @Bean
-        public KurinLockManager kurinLockManager(KurinNode kurinNode) {
-            return new KurinLockManager(kurinNode, 2000, 2000);
+        public KurinLockManager kurinLockManager(KurinNode kurinNode, LockStateMachine lockStateMachine) {
+            return new KurinLockManager(kurinNode, lockStateMachine, java.time.Duration.ofSeconds(2));
         }
     }
 

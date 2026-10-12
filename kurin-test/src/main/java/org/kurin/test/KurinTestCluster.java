@@ -224,10 +224,13 @@ public final class KurinTestCluster implements AutoCloseable {
         String leaderId = leader.get().nodeId();
         long term = leader.get().status().term();
         // Nodes cut off from the leader by a partition cannot learn about it and are not waited for
-        boolean acknowledged = runningNodes().stream()
+        List<Node> reachable = runningNodes().stream()
                 .filter(node -> !faults.isBlocked(leaderId, node.nodeId()))
+                .toList();
+        boolean acknowledged = reachable.stream()
                 .allMatch(node -> leaderId.equals(node.status().leaderId()) && node.status().term() == term);
-        return acknowledged ? leader : Optional.empty();
+        // A leader that was just cut off still holds its lease for a moment; it reaches no majority and does not count
+        return acknowledged && reachable.size() >= nodes.size() / 2 + 1 ? leader : Optional.empty();
     }
 
     /**
@@ -238,6 +241,21 @@ public final class KurinTestCluster implements AutoCloseable {
                 .atMost(timeout)
                 .pollInterval(Duration.ofMillis(10))
                 .until(() -> runningNodes().stream().allMatch(node -> node.status().lastApplied() >= logIndex));
+    }
+
+    /**
+     * Waits until every running node has applied everything that is in the log of any running node:
+     * all commands acknowledged so far are visible on all of them.
+     */
+    public void awaitInSync(Duration timeout) {
+        Awaitility.await("all running nodes in sync")
+                .atMost(timeout)
+                .pollInterval(Duration.ofMillis(10))
+                .until(() -> {
+                    List<RaftStatus> statuses = runningNodes().stream().map(Node::status).toList();
+                    long lastLogIndex = statuses.stream().mapToLong(RaftStatus::lastLogIndex).max().orElse(0);
+                    return statuses.stream().allMatch(status -> status.lastApplied() >= lastLogIndex);
+                });
     }
 
     // ---------------------------------------------------------------- faults

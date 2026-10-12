@@ -9,7 +9,7 @@ Work follows `KURIN_1.1_CLAUDE_CODE_PROMPT.md` phase by phase. Each phase ends w
 | 2 | NOOP entry, check-quorum, lease, PreVote, read consistency, leadership API, fault injection tests | done |
 | 3 | Snapshots, compaction, file persistence | done |
 | 4 | Spring integration of the core | done |
-| 5 | Locks, leadership tasks, exactly-once jobs | pending |
+| 5 | Locks, leadership tasks, exactly-once jobs | done |
 | 6 | Cache | pending |
 | 7 | Data routing | pending |
 | 8 | Observability, documentation | pending |
@@ -192,3 +192,53 @@ options, read/write routing, shard router). Phase 1 builds on it.
   by default, which silently dropped the configuration metadata.
 - **State machine services must be eager singletons.** A service bean created after the node started cannot be
   added to the state machine; this fails with an explicit error instead of a silent "No handler found".
+
+## Phase 5
+
+### Done
+
+- **Lock state machine (6.1).** `LockStateMachine` keeps `LockRecord(ownerId, fencingToken, expiresAtMs,
+  acquiredAtMs)` per key. Its only clock is `KurinCommandContext.timestampMs()`, made monotonic inside the state
+  machine. The fencing token is the log index of the granting command. Commands: `AcquireLock`, `RenewLock`,
+  `ReleaseLock`, `PurgeExpiredLocks`; an acquire over an expired record overwrites it. Snapshot and restore.
+- **`KurinLockManager` (6.1).** `tryLock(key, ttl)`, `tryLock(key, ttl, waitTimeout)`, `lock(...)`, `LockOptions`
+  with `autoRenew` and `reentrant`, and `LockHandle` (`key`, `fencingToken`, `expiresAt`, `renew`, `release`,
+  `isHeld`, `AutoCloseable`). The owner id is `nodeId:UUID` per attempt. An attempt without a definite answer is
+  followed by a background `ReleaseLock` of that owner id, retried with backoff.
+- **Waiting without polling (6.1).** Every node raises a local event when a key becomes free (release, purge,
+  overwrite of an expired record). A parked thread is woken by it; the timed wait with exponential backoff and
+  jitter (50-1000 ms) is only a safety net.
+- **Leadership (6.2).** `@KurinLeaderOnly(onNotLeader = SKIP | THROW)` checks `leadership()`, binds the token to
+  `KurinLeadership.currentToken()`. `KurinLeaderTasks` runs registered tasks only while the node holds established
+  leadership and cancels running ones (signal plus interrupt) when it is lost. `@KurinLeaderTask` registers bean
+  methods. The lock purge is such a task (`kurin.locks.purge-interval`).
+- **Run once per slot (6.3).** `JobStateMachine` with `ClaimJob` / `CompleteJob`, `AT_MOST_ONCE` and
+  `AT_LEAST_ONCE`, bounded history, `JobHistory` query. `KurinJobs.runOnce` and `@KurinScheduledOnce`; the slot is
+  the wall clock rounded to the nearest slot boundary. `KurinJobContext.current()` exposes slot and fencing token.
+- **`@KurinDistributedLock` (6.4).** `key` (SpEL, parsed once per method, failure or null is an exception), `ttl`,
+  `waitTimeout`, `onBusy = SKIP | THROW | WAIT`, `autoRenew`, `reentrant`; `KurinLockContext.current()`;
+  `KurinLockTemplate` on the new API.
+- **Startup validation.** `SKIP` on a primitive return type, `WAIT` without a wait timeout, unparsable key
+  expressions or durations, unsupported `@KurinLeaderTask` signatures and duplicate task names stop the application
+  at startup.
+- **Tests.** Spec tests 11-14 in `LockClusterTest`, 15 in `JobAndLeaderClusterTest` (programmatic) and
+  `CoordinationClusterTest` (`@KurinScheduledOnce` on three application contexts), 16 in `CoordinationClusterTest`.
+
+### Decisions and deviations
+
+- **One waiter per node is woken per release**, the longest waiting first. Waking all of them would cost one Raft
+  command per waiter for a lock only one can get, which is exactly what the spec wants to avoid.
+- **A slot is a number, and the history size travels in `ClaimJob`.** Slots older than the retained history are
+  refused for good (`prunedThroughSlot`), so pruning cannot make an `AT_MOST_ONCE` slot claimable again. Carrying
+  the history size in the command keeps pruning identical on nodes with different local configuration.
+- **A reported failure completes a slot.** `AT_LEAST_ONCE` re-runs a slot only when its owner went silent past the
+  lease, as the spec words it, not when the job itself threw.
+- **`onBusy = WAIT` requires a positive `waitTimeout`** and throws when it runs out. An unbounded wait on a
+  cluster-wide lock is never what a request thread wants.
+- **`isHeld()` is conservative.** The local deadline is measured from before the acquire or renew request was
+  sent, so the handle never claims the lock longer than the cluster grants it.
+- **`status()` is republished before a command future completes.** A caller that saw its command finish and then
+  read `status().lastApplied()` could observe the previous value; two test failures in a 20-run loop traced back to
+  this. `KurinTestCluster.awaitInSync` was added for tests that need all nodes caught up.
+- **`KurinTestCluster.awaitLeader` now also requires a majority to follow the leader.** A leader that was just cut
+  off keeps a valid lease for a moment and was returned as "the leader" by a test.

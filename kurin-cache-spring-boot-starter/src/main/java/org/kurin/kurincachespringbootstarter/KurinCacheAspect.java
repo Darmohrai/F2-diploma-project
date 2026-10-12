@@ -61,7 +61,8 @@ public class KurinCacheAspect {
         long waitDeadline = System.currentTimeMillis() + ttlMs;
 
         while (System.currentTimeMillis() < waitDeadline) {
-            boolean acquired = lockManager.tryLock(lockKey, ttlMs);
+            java.util.Optional<org.kurin.kurinlocks.api.LockHandle> handle = lockManager.tryLock(lockKey, java.time.Duration.ofMillis(ttlMs));
+            boolean acquired = handle.isPresent();
 
             if (acquired) {
                 try {
@@ -74,7 +75,7 @@ public class KurinCacheAspect {
                     log.debug("[Spring AOP] Cache MISS. Fetching from DB with lock for key '{}'", key);
                     return proceedAndCache(joinPoint, cache, key, kurinCacheable);
                 } finally {
-                    lockManager.unlock(lockKey);
+                    handle.get().release();
                 }
             } else {
                 log.debug("[Spring AOP] Lock occupied for key '{}', waiting...", key);

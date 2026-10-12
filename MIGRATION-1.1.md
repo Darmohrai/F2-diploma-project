@@ -129,4 +129,42 @@ relying on `kurin-cache-spring-boot-starter` for them.
 - There is no `KryoSerializer` bean any more, and `new KryoSerializer(List)` no longer exists. Use
   `KurinNode.serializer()` after start, or `KryoSerializer.standalone(types...)` outside of a node.
 
-Sections for locks, cache and routing APIs are added as those phases land.
+## Locks and coordination
+
+### `kurin-locks`
+
+- `DistributedLockService`, `AcquireLockCommand` and `ReleaseLockCommand` are replaced by `LockStateMachine` and
+  the records in `LockCommands`. Lock state of a 1.0.x cluster cannot be carried over.
+- `KurinLockManager` has a new constructor, `KurinLockManager(KurinNode, LockStateMachine, Duration commandTimeout)`,
+  and a new API:
+
+  | 1.0.x | 1.1.0 |
+  |-------|-------|
+  | `boolean tryLock(String key, long ttlMs)` | `Optional<LockHandle> tryLock(String key, Duration ttl)` |
+  | `void unlock(String key)` | `LockHandle.release()` (or try-with-resources) |
+  | - | `tryLock(key, ttl, waitTimeout)`, `lock(key, ttl, waitTimeout)`, `tryLock(key, LockOptions)` |
+
+- A lock is no longer owned by "node plus thread id". Every acquisition has its own owner; only the `LockHandle`
+  it returned can release or renew it. Acquiring the same key twice from one thread is refused unless
+  `LockOptions.reentrant(true)` is used for both.
+- Every grant carries a `fencingToken()`, and expiry is decided by the replicated log, identically on all nodes.
+- `KurinLockAcquisitionException` now extends `KurinException`.
+
+### Spring starter
+
+- `@KurinDistributedLock`:
+  - `ttlMs` (long) is replaced by `ttl` (duration string, default `PT30S`);
+  - `key` is always a SpEL expression. A constant key must be quoted (`key = "'nightly'"`). An expression that
+    fails or yields null now throws `KurinLockKeyException`; it used to be taken as a literal key;
+  - new attributes `waitTimeout`, `onBusy` (default `SKIP`, the former behaviour), `autoRenew`, `reentrant`;
+  - with `onBusy = SKIP` the method must not return a primitive: the application fails to start otherwise.
+- `@KurinLeaderOnly` now requires established leadership with a valid lease, not just the leader role, and has
+  `onNotLeader = SKIP | THROW`. With `SKIP` a primitive return type fails the startup.
+- New: `@KurinLeaderTask`, `@KurinScheduledOnce`, `KurinLeaderTasks`, `KurinJobs`, `KurinLockContext`,
+  `KurinLeadership`, `KurinJobContext`.
+- `KurinLockTemplate.executeWithLock(key, ttlMs, action)` takes a `Duration` now.
+- Properties: `kurin.locks.lock-timeout-ms` and `kurin.locks.unlock-timeout-ms` are replaced by
+  `kurin.locks.command-timeout`. New: `kurin.locks.purge-interval`, `kurin.jobs.history-size`,
+  `kurin.jobs.command-timeout`.
+
+Sections for the cache and routing APIs are added as those phases land.
