@@ -1,77 +1,85 @@
 package org.kurin.kurinspringbootstarter.starter;
 
-import org.kurin.kurinspringbootstarter.events.KurinLeaderElectedEvent;
-import org.kurin.kurinspringbootstarter.events.KurinLeaderLostEvent;
 import org.kurin.kurinspringbootstarter.template.KurinTemplate;
-import org.kurin.network.serializer.KryoSerializer;
+import org.kurin.network.config.NetworkConfig;
 import org.kurin.raft.KurinNode;
-import org.kurin.raft.RaftStatus;
-import org.kurin.raft.state.RoleChangeListener;
-import org.kurin.raft.tools.PojoStateMachine;
-import org.springframework.aop.support.AopUtils;
+import org.kurin.raft.RaftConfig;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 
-import java.util.ArrayList;
-import java.util.List;
-
 @AutoConfiguration
-@EnableConfigurationProperties(KurinProperties.class)
+@EnableConfigurationProperties({KurinProperties.class, KurinSerializationProperties.class})
 public class KurinAutoConfiguration {
 
-    @Bean(initMethod = "start", destroyMethod = "shutdown")
-    public KurinNode kurinNode(
-            KurinProperties props,
-            ApplicationContext context,
-            ObjectProvider<KurinNodeBuilderCustomizer> customizers,
-            ApplicationEventPublisher eventPublisher) {
+    // Static: a bean post-processor must exist before the configuration class itself is instantiated
+    @Bean
+    public static KurinServiceRegistry kurinServiceRegistry() {
+        return new KurinServiceRegistry();
+    }
 
+    @Bean
+    public KurinEventDispatcher kurinEventDispatcher(ApplicationEventPublisher eventPublisher) {
+        return new KurinEventDispatcher(eventPublisher);
+    }
+
+    /**
+     * The node is created here but started by {@link KurinNodeLifecycle}. Creating it needs no other
+     * application bean, so anything may depend on it.
+     */
+    @Bean
+    public KurinNode kurinNode(KurinProperties props, KurinEventDispatcher eventDispatcher,
+                               ObjectProvider<KurinNodeBuilderCustomizer> customizers) {
         KurinNode.Builder builder = KurinNode.builder()
-                .localNode(props.getHost(), props.getPort())
-                .storage(props.getStorage());
+                .localNode(props.getAdvertisedHost(), props.getPort())
+                .bindHost(props.getBindHost())
+                .clusterName(props.getClusterName())
+                .storage(props.getStorage())
+                .addRoleChangeListener(eventDispatcher);
         if (props.getDataDir() != null) {
             builder.dataDir(props.getDataDir());
         }
-        if (props.getPeers() != null && !props.getPeers().isEmpty()) {
+        if (props.getPeers() != null) {
             builder.addPeers(props.getPeers().toArray(new String[0]));
         }
 
-        builder.addRoleChangeListener(new RoleChangeListener() {
-            @Override
-            public void onLeaderElected(RaftStatus status) {
-                eventPublisher.publishEvent(new KurinLeaderElectedEvent(this));
-            }
+        RaftConfig raft = builder.raftConfig();
+        raft.setHeartbeatIntervalMs(props.getHeartbeatInterval().toMillis());
+        raft.setElectionTimeoutMinMs(props.getElectionTimeoutMin().toMillis());
+        raft.setElectionTimeoutMaxMs(props.getElectionTimeoutMax().toMillis());
+        raft.setLeaseRatio(props.getLeaseRatio());
+        raft.setCommandTimeoutMs(props.getCommandTimeout().toMillis());
+        raft.setMaxEntriesPerAppend(props.getMaxEntriesPerAppend());
+        raft.setMaxInflightAppends(props.getMaxInflightAppends());
+        raft.setSnapshotThresholdEntries(props.getSnapshotThreshold());
+        raft.setDedupCacheSize(props.getDedupCacheSize());
 
-            @Override
-            public void onLeaderLost(RaftStatus status) {
-                eventPublisher.publishEvent(new KurinLeaderLostEvent(this));
-            }
-        });
+        NetworkConfig network = builder.networkConfig();
+        network.setMaxPayloadSize(Math.toIntExact(props.getMaxPayloadSize().toBytes()));
+        network.setClusterSecret(props.getClusterSecret());
+        network.setIdleTimeoutSeconds(Math.toIntExact(Math.max(1, props.getIdleTimeout().toSeconds())));
+        NetworkConfig.TlsConfig tls = network.getTls();
+        tls.setEnabled(props.getTls().isEnabled());
+        tls.setKeyStore(props.getTls().getKeyStore());
+        tls.setKeyStorePassword(props.getTls().getKeyStorePassword());
+        tls.setKeyStoreType(props.getTls().getKeyStoreType());
+        tls.setTrustStore(props.getTls().getTrustStore());
+        tls.setTrustStorePassword(props.getTls().getTrustStorePassword());
+        tls.setTrustStoreType(props.getTls().getTrustStoreType());
 
-        List<Object> servicesList = new ArrayList<>();
-        for (String beanName : context.getBeanDefinitionNames()) {
-            Class<?> type = context.getType(beanName);
-            if (type == null || type.getName().startsWith("org.springframework") || !PojoStateMachine.isService(type)) {
-                continue;
-            }
-            Object bean = context.getBean(beanName);
-            builder.addService(bean, AopUtils.getTargetClass(bean));
-            servicesList.add(bean);
-        }
-
-        customizers.orderedStream().forEach(customizer -> customizer.customize(builder, servicesList));
+        customizers.orderedStream().forEach(customizer -> customizer.customize(builder));
         return builder.build();
     }
 
     @Bean
-    @ConditionalOnMissingBean
-    public KryoSerializer kurinSerializer(KurinNode kurinNode) {
-        return kurinNode.serializer();
+    public KurinNodeLifecycle kurinNodeLifecycle(KurinNode kurinNode, KurinServiceRegistry registry,
+                                                 KurinSerializationProperties serialization,
+                                                 ObjectProvider<KurinTypeRegistrar> typeRegistrars,
+                                                 ObjectProvider<KurinNodeCustomizer> customizers) {
+        return new KurinNodeLifecycle(kurinNode, registry, serialization, typeRegistrars, customizers);
     }
 
     @Bean

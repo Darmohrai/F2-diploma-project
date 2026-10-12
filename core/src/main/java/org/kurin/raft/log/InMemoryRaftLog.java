@@ -12,8 +12,7 @@ public class InMemoryRaftLog implements RaftLog {
     public void append(LogEntry entry) {
         if (entry.index() != getLastLogIndex() + 1) {
             throw new IllegalArgumentException(
-                    "Log integrity violation. Index expected " + (getLastLogIndex() + 1) + ", get " + entry.index()
-            );
+                    "Log integrity violation: expected index " + (getLastLogIndex() + 1) + ", got " + entry.index());
         }
         entries.add(entry);
     }
@@ -79,16 +78,34 @@ public class InMemoryRaftLog implements RaftLog {
 
     @Override
     public void compact(long upToIndex, long upToTerm) {
-        if (upToIndex <= baseIndex) return;
-
-        int removeCount = (int) (upToIndex - baseIndex);
-        if (removeCount >= entries.size()) {
-            entries.clear();
-        } else {
-            entries.subList(0, removeCount).clear();
+        if (upToIndex <= baseIndex) {
+            return;
         }
-
+        int removeCount = (int) Math.min(upToIndex - baseIndex, entries.size());
+        entries.subList(0, removeCount).clear();
         this.baseIndex = upToIndex;
         this.baseTerm = upToTerm;
+    }
+
+    @Override
+    public void reset(long baseIndex, long baseTerm) {
+        entries.clear();
+        this.baseIndex = baseIndex;
+        this.baseTerm = baseTerm;
+    }
+
+    @Override
+    public void sync() {
+        // nothing to flush
+    }
+
+    @Override
+    public long getDurableIndex() {
+        return getLastLogIndex();
+    }
+
+    @Override
+    public void close() {
+        // nothing to release
     }
 }

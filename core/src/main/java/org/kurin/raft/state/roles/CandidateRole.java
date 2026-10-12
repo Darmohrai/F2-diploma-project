@@ -71,10 +71,17 @@ public class CandidateRole implements NodeRole {
     }
 
     @Override
+    public boolean hasLiveLeader(RaftState context) {
+        return false;
+    }
+
+    @Override
     public void onElectionTimeout(RaftState context) {
         log.info("Election for term {} got no quorum on {}. Starting a new one.",
                 context.getCurrentTerm(), context.getLocalAddress().asString());
-        context.transitionTo(new CandidateRole());
+        // Back to follower, and straight into a new pre-vote round
+        context.stepDown(context.getCurrentTerm(), null);
+        context.getCurrentRole().onElectionTimeout(context);
     }
 
     private void processVoteResponse(RaftState context, RequestVoteResponse response) {
@@ -116,7 +123,19 @@ public class CandidateRole implements NodeRole {
 
     @Override
     public CompletableFuture<Object> handleClientQuery(RaftState context, ClientQueryRequest request, boolean local) {
+        if (local && request.consistency() == org.kurin.api.ReadConsistency.LOCAL) {
+            return context.executeQuery(request.query());
+        }
         return noLeader(context, local);
+    }
+
+    @Override
+    public org.kurin.raft.rpc.InstallSnapshotResponse handleInstallSnapshot(RaftState context, org.kurin.raft.rpc.InstallSnapshotRequest request) {
+        if (request.term() >= context.getCurrentTerm()) {
+            context.stepDown(request.term(), request.leaderId());
+            return context.getCurrentRole().handleInstallSnapshot(context, request);
+        }
+        return new org.kurin.raft.rpc.InstallSnapshotResponse(context.getCurrentTerm(), 0, false);
     }
 
     private CompletableFuture<Object> noLeader(RaftState context, boolean local) {

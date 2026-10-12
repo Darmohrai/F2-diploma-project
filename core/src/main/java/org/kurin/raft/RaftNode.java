@@ -5,7 +5,16 @@ import org.kurin.network.client.KurinTransport;
 import org.kurin.network.config.NetworkConfig;
 import org.kurin.network.model.NodeAddress;
 import org.kurin.network.serializer.KryoSerializer;
+import org.kurin.raft.log.FileRaftLog;
 import org.kurin.raft.log.InMemoryRaftLog;
+import org.kurin.raft.log.RaftLog;
+import org.kurin.raft.snapshot.FileSnapshotStore;
+import org.kurin.raft.snapshot.InMemorySnapshotStore;
+import org.kurin.raft.snapshot.SnapshotStore;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import org.kurin.raft.state.FilePersistentMetadata;
 import org.kurin.raft.state.InMemoryPersistentMetadata;
 import org.kurin.raft.state.NodeRole;
@@ -36,13 +45,15 @@ public class RaftNode {
     private final NetworkStarter networkStarter;
     private final RaftState raftState;
     private final ExecutorService raftExecutor;
+    private final RaftLog raftLog;
 
     public RaftNode(NodeAddress localAddress, Set<NodeAddress> peers, StateMachine stateMachine,
                     RaftConfig raftConfig, NetworkConfig networkConfig, KryoSerializer serializer,
                     List<RoleChangeListener> roleListeners, UnaryOperator<KurinTransport> transportDecorator) {
         AtomicReference<Thread> raftThread = new AtomicReference<>();
         CountDownLatch threadStarted = new CountDownLatch(1);
-        this.raftExecutor = Executors.newSingleThreadExecutor(task -> {
+        LinkedBlockingQueue<Runnable> raftQueue = new LinkedBlockingQueue<>();
+        this.raftExecutor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, raftQueue, task -> {
             Thread thread = new Thread(task, "kurin-raft-" + localAddress.port());
             thread.setDaemon(true);
             raftThread.set(thread);
@@ -52,20 +63,27 @@ public class RaftNode {
         raftExecutor.execute(threadStarted::countDown);
         awaitUninterruptibly(threadStarted);
 
-        this.raftState = new RaftState(raftConfig, localAddress, peers, new InMemoryRaftLog(), stateMachine,
-                createMetadata(raftConfig, localAddress), serializer, roleListeners, raftExecutor, raftThread.get());
+        PersistentMetadata metadata;
+        SnapshotStore snapshotStore;
+        if (raftConfig.getStorage() == RaftConfig.StorageType.MEMORY) {
+            metadata = new InMemoryPersistentMetadata();
+            this.raftLog = new InMemoryRaftLog();
+            snapshotStore = new InMemorySnapshotStore();
+        } else {
+            Path dataDir = resolveDataDir(raftConfig, localAddress);
+            metadata = new FilePersistentMetadata(dataDir);
+            this.raftLog = new FileRaftLog(dataDir.resolve("log"), serializer);
+            snapshotStore = new FileSnapshotStore(dataDir, serializer);
+            log.info("Node {} keeps its state in {}", localAddress.asString(), dataDir.toAbsolutePath());
+        }
+
+        this.raftState = new RaftState(raftConfig, localAddress, peers, raftLog, stateMachine, metadata, serializer,
+                roleListeners, raftExecutor, raftThread.get(), snapshotStore, () -> !raftQueue.isEmpty());
 
         RaftDispatcher dispatcher = new RaftDispatcher(raftState);
         this.networkStarter = new NetworkStarter(localAddress, dispatcher, networkConfig, serializer);
         this.raftState.setTransport(transportDecorator.apply(networkStarter.getClient()));
         this.raftState.setTimer(networkStarter.getTimer());
-    }
-
-    private static PersistentMetadata createMetadata(RaftConfig config, NodeAddress localAddress) {
-        if (config.getStorage() == RaftConfig.StorageType.MEMORY) {
-            return new InMemoryPersistentMetadata();
-        }
-        return new FilePersistentMetadata(resolveDataDir(config, localAddress));
     }
 
     public static Path resolveDataDir(RaftConfig config, NodeAddress localAddress) {
@@ -80,6 +98,23 @@ public class RaftNode {
      * @throws IllegalStateException if the listening port cannot be bound
      */
     public void start() {
+        // Durable state is restored before the node can be reached: a failure here must fail the start
+        CompletableFuture<Void> restored = new CompletableFuture<>();
+        raftState.execute(() -> {
+            try {
+                raftState.restoreFromStorage();
+                restored.complete(null);
+            } catch (Throwable t) {
+                restored.completeExceptionally(t);
+            }
+        });
+        try {
+            restored.join();
+        } catch (CompletionException e) {
+            throw new IllegalStateException("Node " + raftState.getLocalAddress().asString()
+                    + " cannot restore its state: " + e.getCause().getMessage(), e.getCause());
+        }
+
         networkStarter.start();
         raftState.execute(() -> raftState.transitionTo(new FollowerRole()));
     }
@@ -118,6 +153,7 @@ public class RaftNode {
             raftExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
+        raftLog.close();
     }
 
     public RaftState getRaftState() {

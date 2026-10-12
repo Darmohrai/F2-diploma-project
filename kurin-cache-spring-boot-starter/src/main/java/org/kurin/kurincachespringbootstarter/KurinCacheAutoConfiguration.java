@@ -2,7 +2,7 @@ package org.kurin.kurincachespringbootstarter;
 
 import org.kurin.kurinlocks.api.KurinLockManager;
 import org.kurin.kurinspringbootstarter.starter.KurinAutoConfiguration;
-import org.kurin.kurinspringbootstarter.starter.KurinNodeBuilderCustomizer;
+import org.kurin.kurinspringbootstarter.starter.KurinNodeCustomizer;
 import org.kurin.kurintieredcache.core.*;
 import org.kurin.kurintieredcache.provider.CaffeineCacheProvider;
 import org.kurin.kurintieredcache.provider.RocksDBCacheProvider;
@@ -57,10 +57,7 @@ public class KurinCacheAutoConfiguration {
     }
 
     @Bean
-    public KurinNodeBuilderCustomizer raftCacheIntegrator(KurinCacheManager cacheManager) {
-        return (builder, registeredServices) -> {
-            RaftCacheUpdater updater = new RaftCacheUpdater(cacheManager, registeredServices);
-            builder.addStateMachineListener(updater);
-        };
+    public KurinNodeCustomizer raftCacheIntegrator(KurinCacheManager cacheManager) {
+        return (node, registeredServices) -> node.addStateMachineListener(new RaftCacheUpdater(cacheManager, registeredServices));
     }
 }

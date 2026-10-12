@@ -13,6 +13,9 @@ import org.kurin.raft.RaftStatus;
 import org.kurin.raft.log.LogEntry;
 import org.kurin.raft.log.LogEntryType;
 import org.kurin.raft.log.RaftLog;
+import org.kurin.raft.snapshot.Snapshot;
+import org.kurin.raft.snapshot.SnapshotStore;
+import java.util.function.BooleanSupplier;
 import org.kurin.raft.state.roles.FollowerRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 public class RaftState {
     private static final Logger log = LoggerFactory.getLogger(RaftState.class);
     private static final boolean THREAD_CHECKS = Boolean.getBoolean("kurin.debug.thread-checks");
+    private static final int MAX_TASKS_PER_SYNC = 64;
 
     private final RaftConfig config;
     private final NodeAddress localAddress;
@@ -50,6 +54,9 @@ public class RaftState {
     private final ExecutorService raftExecutor;
     private final Thread raftThread;
     private final Duration rpcTimeout;
+    private final SnapshotStore snapshotStore;
+    private final BooleanSupplier moreTasksQueued;
+    private int tasksSinceSync;
 
     private KurinTransport transport;
     private Timer timer;
@@ -71,10 +78,16 @@ public class RaftState {
     private final LinkedHashMap<String, CommandOutcome> processedRequests;
 
     private volatile RaftStatus status;
+    private volatile org.kurin.api.LeadershipToken leadershipToken;
+    private long lastLeaderContactNanos;
+    private boolean leaderContactKnown;
 
     public RaftState(RaftConfig config, NodeAddress localAddress, Set<NodeAddress> peers, RaftLog raftLog,
                      StateMachine stateMachine, PersistentMetadata metadata, KryoSerializer serializer,
-                     List<RoleChangeListener> roleListeners, ExecutorService raftExecutor, Thread raftThread) {
+                     List<RoleChangeListener> roleListeners, ExecutorService raftExecutor, Thread raftThread,
+                     SnapshotStore snapshotStore, BooleanSupplier moreTasksQueued) {
+        this.snapshotStore = snapshotStore;
+        this.moreTasksQueued = moreTasksQueued;
         this.config = config;
         this.localAddress = localAddress;
         this.peers = Set.copyOf(peers);
@@ -113,11 +126,32 @@ public class RaftState {
                     // The Raft thread must survive: a dead thread would silently freeze the node
                     log.error("Unexpected error on the Raft thread of {}", localAddress.asString(), t);
                 } finally {
+                    flushLogIfIdle();
                     publishStatus();
                 }
             });
         } catch (RejectedExecutionException e) {
             throw new KurinNotStartedException("Node " + localAddress.asString() + " is shut down");
+        }
+    }
+
+    // Group commit: entries appended by the tasks of one burst share a single disk flush
+    private void flushLogIfIdle() {
+        if (raftLog.getDurableIndex() >= raftLog.getLastLogIndex()) {
+            tasksSinceSync = 0;
+            return;
+        }
+        if (++tasksSinceSync < MAX_TASKS_PER_SYNC && moreTasksQueued.getAsBoolean()) {
+            return;
+        }
+        tasksSinceSync = 0;
+        try {
+            raftLog.sync();
+            if (currentRole != null) {
+                currentRole.onLogDurable(this);
+            }
+        } catch (Throwable t) {
+            log.error("Cannot flush the Raft log of {}", localAddress.asString(), t);
         }
     }
 
@@ -246,6 +280,58 @@ public class RaftState {
         return (peers.size() + 1) / 2 + 1;
     }
 
+    // ---------------------------------------------------------------- leader contact and leadership
+
+    /**
+     * Records that the legitimate leader of the current term was just heard from.
+     */
+    public void markLeaderContact() {
+        assertOnRaftThread();
+        lastLeaderContactNanos = System.nanoTime();
+        leaderContactKnown = true;
+    }
+
+    /**
+     * @return true if a leader was heard from within the minimum election timeout. While that holds, this node
+     * does not vote for anyone else, which is what makes leader leases safe.
+     */
+    public boolean heardFromLeaderRecently() {
+        assertOnRaftThread();
+        return leaderContactKnown
+                && System.nanoTime() - lastLeaderContactNanos < java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(config.getElectionTimeoutMinMs());
+    }
+
+    /**
+     * Publishes or withdraws (null) the proof of established leadership of this node.
+     */
+    public void setLeadershipToken(org.kurin.api.LeadershipToken token) {
+        assertOnRaftThread();
+        this.leadershipToken = token;
+    }
+
+    /**
+     * @return the token of the leadership established by this node, or null; safe to call from any thread.
+     * The caller must also check that the lease in {@link #status()} is still valid.
+     */
+    public org.kurin.api.LeadershipToken leadershipToken() {
+        return leadershipToken;
+    }
+
+    /**
+     * Runs a query against the local state machine.
+     */
+    public CompletableFuture<Object> executeQuery(Object query) {
+        assertOnRaftThread();
+        try {
+            return CompletableFuture.completedFuture(stateMachine.executeQuery(query));
+        } catch (StateMachine.HandlerFailedException e) {
+            Throwable cause = e.getCause();
+            return CompletableFuture.failedFuture(new org.kurin.api.exception.KurinCommandFailedException(cause.getClass().getName(), cause.getMessage()));
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(new org.kurin.api.exception.KurinCommandFailedException(e.getClass().getName(), e.getMessage()));
+        }
+    }
+
     // ---------------------------------------------------------------- applying
 
     public void setCommitIndex(long commitIndex) {
@@ -286,6 +372,97 @@ public class RaftState {
                 outcome.completeInto(pending);
             }
         }
+        if (lastApplied - raftLog.getBaseIndex() >= config.getSnapshotThresholdEntries()) {
+            takeSnapshot();
+        }
+    }
+
+    // ---------------------------------------------------------------- snapshots
+
+    /**
+     * Captures the state machine at {@code lastApplied}, stores it and drops the log entries it covers.
+     */
+    public void takeSnapshot() {
+        assertOnRaftThread();
+        long index = lastApplied;
+        if (index <= raftLog.getBaseIndex()) {
+            return;
+        }
+        long startedNanos = System.nanoTime();
+        long term = raftLog.getEntry(index).term();
+        Snapshot snapshot = new Snapshot(index, term, stateMachine.takeSnapshot(), new LinkedHashMap<>(processedRequests));
+        // The snapshot is durable before the entries it replaces are dropped
+        snapshotStore.save(snapshot);
+        raftLog.compact(index, term);
+        log.info("Node {} took a snapshot at index {} ({} bytes of state, {} ms)", localAddress.asString(), index,
+                snapshot.data().length, (System.nanoTime() - startedNanos) / 1_000_000);
+    }
+
+    /**
+     * @return the latest stored snapshot, or null
+     */
+    public Snapshot latestSnapshot() {
+        assertOnRaftThread();
+        return snapshotStore.load();
+    }
+
+    /**
+     * Replaces the local state with a snapshot received from the leader.
+     */
+    public void installSnapshot(Snapshot snapshot) {
+        assertOnRaftThread();
+        snapshotStore.save(snapshot);
+
+        LogEntry local = raftLog.getEntry(snapshot.lastIncludedIndex());
+        if (local != null && local.term() == snapshot.lastIncludedTerm()) {
+            // The log agrees with the snapshot: entries after it are still valid
+            raftLog.compact(snapshot.lastIncludedIndex(), snapshot.lastIncludedTerm());
+        } else {
+            raftLog.reset(snapshot.lastIncludedIndex(), snapshot.lastIncludedTerm());
+        }
+        loadSnapshotIntoStateMachine(snapshot);
+        log.info("Node {} installed a snapshot up to index {}", localAddress.asString(), snapshot.lastIncludedIndex());
+    }
+
+    /**
+     * Brings the node back to its last durable state. Called once, before the node takes a role.
+     * Entries after the snapshot stay unapplied until a leader confirms how far the log is committed.
+     */
+    public void restoreFromStorage() {
+        assertOnRaftThread();
+        Snapshot snapshot = snapshotStore.load();
+        if (snapshot == null) {
+            if (raftLog.getBaseIndex() > 0) {
+                throw new IllegalStateException("The Raft log of " + localAddress.asString() + " starts after index "
+                        + raftLog.getBaseIndex() + " but the snapshot covering the earlier entries is missing");
+            }
+            return;
+        }
+        if (raftLog.getBaseIndex() > snapshot.lastIncludedIndex()) {
+            throw new IllegalStateException("The Raft log of " + localAddress.asString() + " starts after index "
+                    + raftLog.getBaseIndex() + " but the stored snapshot ends at " + snapshot.lastIncludedIndex());
+        }
+        if (raftLog.getBaseIndex() < snapshot.lastIncludedIndex()) {
+            // The node stopped between saving the snapshot and compacting the log
+            LogEntry local = raftLog.getEntry(snapshot.lastIncludedIndex());
+            if (local != null && local.term() == snapshot.lastIncludedTerm()) {
+                raftLog.compact(snapshot.lastIncludedIndex(), snapshot.lastIncludedTerm());
+            } else {
+                raftLog.reset(snapshot.lastIncludedIndex(), snapshot.lastIncludedTerm());
+            }
+        }
+        loadSnapshotIntoStateMachine(snapshot);
+        log.info("Node {} restored its state from the snapshot at index {}; {} later entries await commit confirmation",
+                localAddress.asString(), snapshot.lastIncludedIndex(), raftLog.getLastLogIndex() - snapshot.lastIncludedIndex());
+    }
+
+    private void loadSnapshotIntoStateMachine(Snapshot snapshot) {
+        stateMachine.installSnapshot(snapshot.data());
+        commitIndex = snapshot.lastIncludedIndex();
+        lastApplied = snapshot.lastIncludedIndex();
+        processedRequests.clear();
+        processedRequests.putAll(snapshot.dedupTable());
+        uncommittedRequests.clear();
     }
 
     // A handler exception is the result of the command: lastApplied advances and every node records the same failure

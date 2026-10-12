@@ -33,7 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 @SpringBootTest(
         classes = CacheProtectionIntegrationTest.TestConfig.class,
         properties = {
-                "kurin.node.host=127.0.0.1",
                 "kurin.node.port=9022",
                 "kurin.node.peers=",
                 "kurin.node.storage=memory",

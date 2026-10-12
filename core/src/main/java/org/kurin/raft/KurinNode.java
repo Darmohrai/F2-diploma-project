@@ -1,6 +1,8 @@
 package org.kurin.raft;
 
 import org.kurin.api.CommandOptions;
+import org.kurin.api.LeadershipToken;
+import org.kurin.api.ReadConsistency;
 import org.kurin.api.exception.KurinNotLeaderException;
 import org.kurin.api.exception.KurinNotStartedException;
 import org.kurin.api.exception.KurinTimeoutException;
@@ -21,55 +23,161 @@ import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 /**
  * A member of a Kurin cluster embedded in the application.
+ * <p>
+ * A node is created first and started later. Between the two, services, listeners and types can still be
+ * added; this lets a container create the node early (so that other components can depend on it) and
+ * register the state machine services as it discovers them. {@link #start()} then validates the handlers,
+ * freezes the type registry and joins the cluster.
  */
 public class KurinNode {
     private static final Logger log = LoggerFactory.getLogger(KurinNode.class);
 
     private enum Lifecycle {NEW, STARTED, STOPPED}
 
-    private final RaftNode internalNode;
-    private final RaftState raftState;
-    private final KryoSerializer serializer;
-    private volatile Lifecycle lifecycle = Lifecycle.NEW;
+    private final NodeAddress localAddress;
+    private final Set<NodeAddress> peers;
+    private final RaftConfig raftConfig;
+    private final NetworkConfig networkConfig;
+    private final KurinTypeRegistry typeRegistry;
+    private final UnaryOperator<KurinTransport> transportDecorator;
+    private final List<PojoStateMachine.Service> services;
+    private final List<StateMachineListener> listeners;
+    private final List<RoleChangeListener> roleListeners;
+    private final RaftStatus initialStatus;
 
-    KurinNode(RaftNode internalNode, KryoSerializer serializer) {
-        this.internalNode = internalNode;
-        this.raftState = internalNode.getRaftState();
-        this.serializer = serializer;
+    private volatile Lifecycle lifecycle = Lifecycle.NEW;
+    private volatile RaftNode internalNode;
+    private volatile RaftState raftState;
+    private volatile KryoSerializer serializer;
+
+    private KurinNode(Builder builder, NodeAddress localAddress, Set<NodeAddress> peers) {
+        this.localAddress = localAddress;
+        this.peers = Set.copyOf(peers);
+        this.raftConfig = builder.raftConfig;
+        this.networkConfig = builder.networkConfig;
+        this.typeRegistry = builder.typeRegistry;
+        this.transportDecorator = builder.transportDecorator;
+        this.services = new ArrayList<>(builder.services);
+        this.listeners = new ArrayList<>(builder.listeners);
+        this.roleListeners = new ArrayList<>(builder.roleListeners);
+        this.initialStatus = new RaftStatus(RaftRole.FOLLOWER, 0, null, 0, 0, 0, 0, localAddress.asString());
+    }
+
+    // ---------------------------------------------------------------- configuration before start
+
+    /**
+     * Registers a state machine service: an object with {@code @KurinCommand}, {@code @KurinQuery},
+     * {@code @KurinSnapshot} or {@code @KurinRestore} methods.
+     *
+     * @throws IllegalStateException if the node was already started
+     */
+    public synchronized KurinNode addService(Object service) {
+        ensureNotStarted("add a service");
+        services.add(PojoStateMachine.Service.of(service));
+        return this;
     }
 
     /**
-     * @throws IllegalStateException if the node was already started or its port cannot be bound
+     * Registers a service whose annotated methods are declared by {@code type}, for instances that are proxies.
+     */
+    public synchronized KurinNode addService(Object service, Class<?> type) {
+        ensureNotStarted("add a service");
+        services.add(new PojoStateMachine.Service(service, type));
+        return this;
+    }
+
+    public synchronized KurinNode addStateMachineListener(StateMachineListener listener) {
+        ensureNotStarted("add a state machine listener");
+        listeners.add(listener);
+        return this;
+    }
+
+    public synchronized KurinNode addRoleChangeListener(RoleChangeListener listener) {
+        ensureNotStarted("add a role change listener");
+        roleListeners.add(listener);
+        return this;
+    }
+
+    /**
+     * Registers a type that travels inside commands, queries or results but cannot be discovered from
+     * their declarations (for example an implementation behind an interface-typed field).
+     */
+    public synchronized KurinNode registerType(Class<?> type) {
+        ensureNotStarted("register a type");
+        typeRegistry.register(type);
+        return this;
+    }
+
+    public KurinTypeRegistry typeRegistry() {
+        return typeRegistry;
+    }
+
+    private void ensureNotStarted(String action) {
+        if (lifecycle != Lifecycle.NEW) {
+            throw new IllegalStateException("Cannot " + action + ": node " + nodeId() + " is already started. "
+                    + "The set of services and types is fixed when the node starts.");
+        }
+    }
+
+    // ---------------------------------------------------------------- lifecycle
+
+    /**
+     * Validates the registered services, freezes the type registry, restores the durable state and joins the cluster.
+     *
+     * @throws IllegalStateException if the node was already started, a handler method is invalid, two types
+     *                               claim the same wire id, the stored state is unusable or the port cannot be bound
      */
     public synchronized void start() {
         if (lifecycle != Lifecycle.NEW) {
             throw new IllegalStateException("Node " + nodeId() + " cannot be started twice");
         }
-        internalNode.start();
-        lifecycle = Lifecycle.STARTED;
-        log.info("Kurin node {} started with peers {}", nodeId(), raftState.getPeers());
+        PojoStateMachine stateMachine = new PojoStateMachine(services);
+        stateMachine.messageHandlerMethods().forEach(typeRegistry::registerHandler);
+        typeRegistry.freeze();
+        KryoSerializer nodeSerializer = new KryoSerializer(typeRegistry);
+        stateMachine.bindSerializer(nodeSerializer);
+        listeners.forEach(stateMachine::addListener);
+
+        RaftNode node = new RaftNode(localAddress, peers, stateMachine, raftConfig, networkConfig, nodeSerializer,
+                roleListeners, transportDecorator);
+        try {
+            node.start();
+        } catch (RuntimeException e) {
+            node.shutdown();
+            throw e;
+        }
+        this.serializer = nodeSerializer;
+        this.raftState = node.getRaftState();
+        this.internalNode = node;
+        this.lifecycle = Lifecycle.STARTED;
+        log.info("Kurin node {} started with peers {} and {} service(s)", nodeId(), peers, services.size());
     }
 
     public synchronized void shutdown() {
         if (lifecycle == Lifecycle.STOPPED) {
             return;
         }
+        boolean wasStarted = lifecycle == Lifecycle.STARTED;
         lifecycle = Lifecycle.STOPPED;
-        internalNode.shutdown();
-        log.info("Kurin node {} stopped", nodeId());
+        if (wasStarted) {
+            internalNode.shutdown();
+            log.info("Kurin node {} stopped", nodeId());
+        }
     }
 
     public boolean isStarted() {
@@ -101,46 +209,59 @@ public class KurinNode {
             throw new IllegalArgumentException("command must not be null");
         }
         String requestId = options.requestId() != null ? options.requestId() : UUID.randomUUID().toString();
-        Duration timeout = options.timeout() != null ? options.timeout() : Duration.ofMillis(raftState.getConfig().getCommandTimeoutMs());
+        Duration timeout = options.timeout() != null ? options.timeout() : Duration.ofMillis(raftConfig.getCommandTimeoutMs());
         ClientCommandRequest request = new ClientCommandRequest(requestId, command);
 
         return submit(timeout, "Command " + command.getClass().getSimpleName() + " (request " + requestId + ")",
-                () -> raftState.getCurrentRole().handleClientCommand(raftState, request, true));
+                state -> state.getCurrentRole().handleClientCommand(state, request, true));
     }
 
+    /**
+     * Runs a {@code @KurinQuery} handler with {@link ReadConsistency#LINEARIZABLE} consistency.
+     */
     public <T> CompletableFuture<T> submitQuery(Object query) {
-        if (query == null) {
-            throw new IllegalArgumentException("query must not be null");
+        return submitQuery(query, ReadConsistency.LINEARIZABLE);
+    }
+
+    /**
+     * @param consistency how fresh the observed state must be; see {@link ReadConsistency} for the trade-offs
+     */
+    public <T> CompletableFuture<T> submitQuery(Object query, ReadConsistency consistency) {
+        if (query == null || consistency == null) {
+            throw new IllegalArgumentException("query and consistency must not be null");
         }
-        ClientQueryRequest request = new ClientQueryRequest(UUID.randomUUID().toString(), query);
-        return submit(Duration.ofMillis(raftState.getConfig().getCommandTimeoutMs()), "Query " + query.getClass().getSimpleName(),
-                () -> raftState.getCurrentRole().handleClientQuery(raftState, request, true));
+        ClientQueryRequest request = new ClientQueryRequest(UUID.randomUUID().toString(), query, consistency);
+        return submit(Duration.ofMillis(raftConfig.getCommandTimeoutMs()), "Query " + query.getClass().getSimpleName(),
+                state -> state.getCurrentRole().handleClientQuery(state, request, true));
     }
 
     @SuppressWarnings("unchecked")
-    private <T> CompletableFuture<T> submit(Duration timeout, String description, Supplier<CompletableFuture<Object>> operation) {
+    private <T> CompletableFuture<T> submit(Duration timeout, String description,
+                                            Function<RaftState, CompletableFuture<Object>> operation) {
         CompletableFuture<Object> result = new CompletableFuture<>();
-        if (lifecycle != Lifecycle.STARTED) {
+        RaftNode node = internalNode;
+        if (lifecycle != Lifecycle.STARTED || node == null) {
             result.completeExceptionally(new KurinNotStartedException("Node " + nodeId()
-                    + (lifecycle == Lifecycle.NEW ? " is not started yet" : " is shut down")));
+                    + (lifecycle == Lifecycle.STOPPED ? " is shut down" : " is not started yet")));
             return (CompletableFuture<T>) result;
         }
 
-        var timeoutTask = internalNode.getTimer().newTimeout(expired -> result.completeExceptionally(new KurinTimeoutException(
-                description + " got no result within " + timeout.toMillis() + " ms. It may still be applied.")),
+        var timeoutTask = node.getTimer().newTimeout(expired -> result.completeExceptionally(new KurinTimeoutException(
+                        description + " got no result within " + timeout.toMillis() + " ms. It may still be applied.")),
                 timeout.toMillis(), TimeUnit.MILLISECONDS);
         result.whenComplete((value, error) -> timeoutTask.cancel());
 
-        attempt(operation, result, true);
+        attempt(node.getRaftState(), operation, result, true);
         return (CompletableFuture<T>) result;
     }
 
-    private void attempt(Supplier<CompletableFuture<Object>> operation, CompletableFuture<Object> result, boolean mayRetry) {
+    private void attempt(RaftState state, Function<RaftState, CompletableFuture<Object>> operation,
+                         CompletableFuture<Object> result, boolean mayRetry) {
         try {
-            raftState.execute(() -> {
+            state.execute(() -> {
                 CompletableFuture<Object> attempt;
                 try {
-                    attempt = operation.get();
+                    attempt = operation.apply(state);
                 } catch (RuntimeException e) {
                     attempt = CompletableFuture.failedFuture(e);
                 }
@@ -148,7 +269,7 @@ public class KurinNode {
                     Throwable cause = error != null ? RpcResult.unwrap(error) : null;
                     if (cause instanceof KurinNotLeaderException && mayRetry && !result.isDone()) {
                         // This node lost leadership while the request was in flight: route it once more
-                        attempt(operation, result, false);
+                        attempt(state, operation, result, false);
                     } else if (cause != null) {
                         result.completeExceptionally(cause);
                     } else {
@@ -164,37 +285,66 @@ public class KurinNode {
     // ---------------------------------------------------------------- status
 
     /**
-     * @return a consistent snapshot of the node state; never blocks
+     * @return a consistent snapshot of the node state; never blocks. Before the node is started it reports
+     * a follower in term 0 without a leader.
      */
     public RaftStatus status() {
-        return raftState.status();
+        RaftState state = raftState;
+        return state != null ? state.status() : initialStatus;
     }
 
     public boolean isLeader() {
-        return raftState.status().isLeader();
+        return status().isLeader();
+    }
+
+    /**
+     * @return a token if this node is the leader right now with certainty: it holds a valid lease and the first
+     * entry of its term is committed. Empty on followers, on a leader that lost contact with the majority and
+     * on a freshly elected leader that has not established itself yet.
+     */
+    public Optional<LeadershipToken> leadership() {
+        RaftState state = raftState;
+        if (state == null || lifecycle != Lifecycle.STARTED) {
+            return Optional.empty();
+        }
+        LeadershipToken token = state.leadershipToken();
+        RaftStatus current = state.status();
+        if (token != null && current.hasValidLease() && current.term() == token.term()) {
+            return Optional.of(token);
+        }
+        return Optional.empty();
     }
 
     public String nodeId() {
-        return raftState.getLocalAddress().asString();
+        return localAddress.asString();
     }
 
     public NodeAddress getLocalAddress() {
-        return raftState.getLocalAddress();
+        return localAddress;
     }
 
     public Set<NodeAddress> peers() {
-        return raftState.getPeers();
+        return peers;
     }
 
     public RaftConfig config() {
-        return raftState.getConfig();
+        return raftConfig;
+    }
+
+    public NetworkConfig networkConfig() {
+        return networkConfig;
     }
 
     /**
      * @return the serializer of this node, restricted to the registered types
+     * @throws KurinNotStartedException before the node is started, because the set of types is not final yet
      */
     public KryoSerializer serializer() {
-        return serializer;
+        KryoSerializer current = serializer;
+        if (current == null) {
+            throw new KurinNotStartedException("The serializer of node " + nodeId() + " exists only after the node is started");
+        }
+        return current;
     }
 
     public static Builder builder() {
@@ -285,7 +435,7 @@ public class KurinNode {
             return this;
         }
 
-        public Builder dataDir(java.nio.file.Path dataDir) {
+        public Builder dataDir(Path dataDir) {
             raftConfig.setDataDir(dataDir);
             return this;
         }
@@ -311,17 +461,14 @@ public class KurinNode {
         }
 
         /**
-         * Validates the configuration, freezes the type registry and creates the node without starting it.
+         * Validates the configuration and creates the node without starting it. Services, listeners and types
+         * can still be added to the node until {@link KurinNode#start()}.
          *
          * @throws IllegalArgumentException on invalid configuration
-         * @throws IllegalStateException    on invalid handler methods or conflicting type ids
          */
         public KurinNode build() {
             if (port <= 0 || port > 65535) {
                 throw new IllegalArgumentException("A node port between 1 and 65535 must be configured, got " + port);
-            }
-            if (services.isEmpty()) {
-                throw new IllegalArgumentException("At least one service with @KurinCommand or @KurinQuery methods must be registered");
             }
             NodeAddress self = resolveSelf();
             Set<NodeAddress> otherPeers = new LinkedHashSet<>(peers);
@@ -337,16 +484,7 @@ public class KurinNode {
             }
             raftConfig.validate();
 
-            PojoStateMachine stateMachine = new PojoStateMachine(services);
-            stateMachine.messageHandlerMethods().forEach(typeRegistry::registerHandler);
-            typeRegistry.freeze();
-            KryoSerializer serializer = new KryoSerializer(typeRegistry);
-            stateMachine.bindSerializer(serializer);
-            listeners.forEach(stateMachine::addListener);
-
-            RaftNode node = new RaftNode(self, otherPeers, stateMachine, raftConfig, networkConfig, serializer,
-                    roleListeners, transportDecorator);
-            return new KurinNode(node, serializer);
+            return new KurinNode(this, self, otherPeers);
         }
 
         private NodeAddress resolveSelf() {

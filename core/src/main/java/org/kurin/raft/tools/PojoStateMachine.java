@@ -64,8 +64,19 @@ public class PojoStateMachine implements StateMachine {
                 throw new IllegalStateException("Service id '" + serviceId + "' is used by both " + clash.getName()
                         + " and " + service.type().getName() + ". Give them distinct @KurinService names.");
             }
+            boolean hasCommands = false;
             for (Method method : annotatedMethods(service.type())) {
                 register(service, serviceId, method);
+                hasCommands |= method.isAnnotationPresent(KurinCommand.class);
+            }
+            if (snapshotHandlers.containsKey(serviceId) != restoreHandlers.containsKey(serviceId)) {
+                throw new IllegalStateException("Service " + service.type().getName()
+                        + " must declare both a @KurinSnapshot and a @KurinRestore method, or neither");
+            }
+            if (hasCommands && !snapshotHandlers.containsKey(serviceId)) {
+                log.warn("Service {} handles commands but has no @KurinSnapshot/@KurinRestore methods. Whatever state its "
+                        + "commands build is lost on nodes that catch up from a snapshot after the log is compacted.",
+                        service.type().getName());
             }
         }
     }

@@ -5,6 +5,10 @@ import org.kurin.raft.rpc.AppendEntriesRequest;
 import org.kurin.raft.rpc.AppendEntriesResponse;
 import org.kurin.raft.rpc.ClientCommandRequest;
 import org.kurin.raft.rpc.ClientQueryRequest;
+import org.kurin.raft.rpc.InstallSnapshotRequest;
+import org.kurin.raft.rpc.InstallSnapshotResponse;
+import org.kurin.raft.rpc.PreVoteRequest;
+import org.kurin.raft.rpc.PreVoteResponse;
 import org.kurin.raft.rpc.RequestVoteRequest;
 import org.kurin.raft.rpc.RequestVoteResponse;
 
@@ -30,6 +34,32 @@ public interface NodeRole {
      * The heartbeat timer of this role instance fired. Only the leader runs one.
      */
     default void onHeartbeatTick(RaftState context) {
+    }
+
+    /**
+     * The local log was flushed to disk: entries up to its durable index now survive a crash of this node.
+     */
+    default void onLogDurable(RaftState context) {
+    }
+
+    InstallSnapshotResponse handleInstallSnapshot(RaftState context, InstallSnapshotRequest request);
+
+    /**
+     * @return true if this node currently has reason to believe that a working leader exists: it heard from
+     * one recently, or it is a leader in contact with a majority. Such a node refuses to help elect another.
+     */
+    boolean hasLiveLeader(RaftState context);
+
+    /**
+     * Answers a pre-vote probe. Never changes the state of this node.
+     */
+    default PreVoteResponse handlePreVote(RaftState context, PreVoteRequest request) {
+        long lastLogTerm = context.getRaftLog().getLastLogTerm();
+        long lastLogIndex = context.getRaftLog().getLastLogIndex();
+        boolean logUpToDate = request.lastLogTerm() > lastLogTerm
+                || (request.lastLogTerm() == lastLogTerm && request.lastLogIndex() >= lastLogIndex);
+        boolean granted = request.term() > context.getCurrentTerm() && logUpToDate && !hasLiveLeader(context);
+        return new PreVoteResponse(context.getCurrentTerm(), granted);
     }
 
     RequestVoteResponse handleRequestVote(RaftState context, RequestVoteRequest request);

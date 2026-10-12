@@ -2,8 +2,11 @@ package org.kurin.kurinspringbootstarter.starter;
 
 import org.kurin.raft.KurinNode;
 
-import java.util.List;
-
+/**
+ * Adjusts the configuration of the node after the {@code kurin.node.*} properties were applied
+ * and before the node object is created.
+ */
+@FunctionalInterface
 public interface KurinNodeBuilderCustomizer {
-    void customize(KurinNode.Builder builder, List<Object> registeredServices);
+    void customize(KurinNode.Builder builder);
 }

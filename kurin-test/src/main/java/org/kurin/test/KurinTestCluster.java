@@ -5,9 +5,6 @@ import org.kurin.raft.KurinNode;
 import org.kurin.raft.RaftConfig;
 import org.kurin.raft.RaftStatus;
 
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -110,7 +107,7 @@ public final class KurinTestCluster implements AutoCloseable {
         this.storage = builder.storage;
         this.dataDir = builder.dataDir;
         this.customizer = builder.customizer;
-        for (int port : freePorts(builder.nodes)) {
+        for (int port : TestPorts.freePorts(builder.nodes)) {
             nodes.add(new Node(nodes.size(), port));
         }
     }
@@ -192,11 +189,12 @@ public final class KurinTestCluster implements AutoCloseable {
     }
 
     /**
-     * @return the running node that is leader in the highest term, if any node currently claims leadership
+     * @return the running node with established leadership (valid lease, first entry of its term committed)
+     * in the highest term, if there is one
      */
     public Optional<Node> leader() {
         return runningNodes().stream()
-                .filter(node -> node.status().isLeader())
+                .filter(node -> node.kurin().leadership().isPresent())
                 .max((a, b) -> Long.compare(a.status().term(), b.status().term()));
     }
 
@@ -206,7 +204,7 @@ public final class KurinTestCluster implements AutoCloseable {
     }
 
     /**
-     * Waits until a leader is elected and acknowledged by a majority of the running nodes.
+     * Waits until a leader has established itself and every running node it can reach follows it.
      *
      * @throws org.awaitility.core.ConditionTimeoutException if no stable leader appears in time
      */
@@ -225,10 +223,11 @@ public final class KurinTestCluster implements AutoCloseable {
         }
         String leaderId = leader.get().nodeId();
         long term = leader.get().status().term();
-        long acknowledged = runningNodes().stream()
-                .filter(node -> leaderId.equals(node.status().leaderId()) && node.status().term() == term)
-                .count();
-        return acknowledged >= nodes.size() / 2 + 1 ? leader : Optional.empty();
+        // Nodes cut off from the leader by a partition cannot learn about it and are not waited for
+        boolean acknowledged = runningNodes().stream()
+                .filter(node -> !faults.isBlocked(leaderId, node.nodeId()))
+                .allMatch(node -> leaderId.equals(node.status().leaderId()) && node.status().term() == term);
+        return acknowledged ? leader : Optional.empty();
     }
 
     /**
@@ -270,30 +269,6 @@ public final class KurinTestCluster implements AutoCloseable {
      */
     public void heal() {
         faults.heal();
-    }
-
-    private static List<Integer> freePorts(int count) {
-        List<ServerSocket> sockets = new ArrayList<>();
-        try {
-            List<Integer> ports = new ArrayList<>();
-            for (int i = 0; i < count; i++) {
-                // All sockets stay open until every port is chosen, so the same port is never handed out twice
-                ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName(HOST));
-                sockets.add(socket);
-                ports.add(socket.getLocalPort());
-            }
-            return ports;
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot find free ports for the test cluster", e);
-        } finally {
-            for (ServerSocket socket : sockets) {
-                try {
-                    socket.close();
-                } catch (IOException e) {
-                    throw new IllegalStateException("Cannot release a probed port", e);
-                }
-            }
-        }
     }
 
     public static final class Builder {

@@ -62,6 +62,8 @@ public class RaftDispatcher implements MessageDispatcher {
         return switch (rpc) {
             case AppendEntriesRequest request -> CompletableFuture.completedFuture(role.handleAppendEntries(raftState, request));
             case RequestVoteRequest request -> CompletableFuture.completedFuture(role.handleRequestVote(raftState, request));
+            case org.kurin.raft.rpc.PreVoteRequest request -> CompletableFuture.completedFuture(role.handlePreVote(raftState, request));
+            case org.kurin.raft.rpc.InstallSnapshotRequest request -> CompletableFuture.completedFuture(role.handleInstallSnapshot(raftState, request));
             case ClientCommandRequest request -> role.handleClientCommand(raftState, request, false);
             case ClientQueryRequest request -> role.handleClientQuery(raftState, request, false);
         };

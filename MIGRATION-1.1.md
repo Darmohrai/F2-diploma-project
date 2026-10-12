@@ -85,11 +85,48 @@ relying on `kurin-cache-spring-boot-starter` for them.
 - `KurinNode.getRaftState()` is gone. Read `KurinNode.status()` (an immutable `RaftStatus`) instead.
 - `StateMachineListener` and `RoleChangeListener` run on the Raft thread: they must not block.
 
+### Queries and leadership
+
+- `submitQuery(query)` is now linearizable (ReadIndex) instead of "whatever the leader has". Pass
+  `ReadConsistency.LEASE` or `ReadConsistency.LOCAL` to trade freshness for latency.
+- `KurinNode.isLeader()` only says that the node believes it is the leader. Use `KurinNode.leadership()` for
+  decisions that must hold on a single node; its token is present only under a valid lease.
+- A leader that loses contact with the majority steps down by itself after `electionTimeoutMin`.
+
+### Lifecycle and persistence
+
+- `KurinNode.Builder.build()` no longer requires services and no longer validates handlers. Both happen in
+  `KurinNode.start()`. Services, listeners and types can be added to the built node until it is started.
+- `KurinNode.serializer()` throws `KurinNotStartedException` before `start()`.
+- With `storage = FILE` (the default) the log and snapshots are now really persisted, under
+  `<dataDir>/log` and `<dataDir>/snapshot.bin`. A node restarts with its state instead of an empty log.
+- The log is compacted automatically every `snapshotThresholdEntries` applied entries (default 10 000). A service
+  that keeps state must implement `@KurinSnapshot` / `@KurinRestore`, otherwise that state is lost on nodes that
+  catch up from a snapshot. A service declaring only one of the two fails at startup.
+
 ## Spring starter (`kurin.node.*`)
 
-- `kurin.node.host` is the advertised host and has no default when peers are configured.
-- New: `kurin.node.storage` (`file` or `memory`), `kurin.node.data-dir`.
-- The `KryoSerializer` bean is the serializer of the node; constructing `new KryoSerializer(List)` is no longer
-  possible. Use `KryoSerializer.standalone(types...)` outside of a node.
+- `kurin.node.host` is renamed to `kurin.node.advertised-host`. It may be omitted only when all peers are loopback
+  addresses.
+- New properties: `cluster-name`, `bind-host`, `data-dir`, `storage`, `heartbeat-interval`, `election-timeout-min`,
+  `election-timeout-max`, `lease-ratio`, `command-timeout`, `max-payload-size`, `max-entries-per-append`,
+  `max-inflight-appends`, `snapshot-threshold`, `dedup-cache-size`, `cluster-secret`, `idle-timeout`, `tls.*`.
+  Durations are `java.time.Duration` values such as `100ms` or `2s`.
+- `kurin.serialization.types` and `KurinTypeRegistrar` beans register types that cannot be discovered from handler
+  signatures.
+- The node is started by a `SmartLifecycle` in phase 0, after all singletons exist and before the web server.
+  Commands submitted earlier (for example from `@PostConstruct`) fail with `KurinNotStartedException`.
+- A bean with Kurin handler methods can now inject `KurinTemplate` or `KurinNode`.
+- State machine service beans must be eagerly initialized singletons. A lazy service created after the node
+  started fails with an explicit error.
+- Invalid handler signatures, conflicting type ids and invalid timing settings fail the application startup.
+- `KurinNodeBuilderCustomizer.customize(builder, services)` is split: `KurinNodeBuilderCustomizer.customize(builder)`
+  for configuration, `KurinNodeCustomizer.customize(node, services)` for work that needs the discovered services.
+- `KurinLeaderElectedEvent` and `KurinLeaderLostEvent` have a new constructor and carry `term`, `leaderId` and
+  `nodeId`. They are published on a separate thread, no longer on the Raft thread.
+- `KurinTemplate.submitQuery` is renamed to `query`; `query(q, ReadConsistency)`, `submitCommand(cmd, Duration)`,
+  `submitCommand(cmd, CommandOptions)`, `isLeader()`, `status()` and `leadership()` are new.
+- There is no `KryoSerializer` bean any more, and `new KryoSerializer(List)` no longer exists. Use
+  `KurinNode.serializer()` after start, or `KryoSerializer.standalone(types...)` outside of a node.
 
 Sections for locks, cache and routing APIs are added as those phases land.

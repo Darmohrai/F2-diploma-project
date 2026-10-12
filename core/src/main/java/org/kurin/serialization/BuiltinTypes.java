@@ -87,10 +87,16 @@ final class BuiltinTypes {
         add(types, 24, RequestVoteRequest.class);
         add(types, 25, RequestVoteResponse.class);
         add(types, 26, ClientCommandRequest.class);
+        add(types, 27, org.kurin.raft.rpc.InstallSnapshotRequest.class);
+        add(types, 28, org.kurin.raft.rpc.InstallSnapshotResponse.class);
         add(types, 29, ClientQueryRequest.class);
         add(types, 30, RpcResult.class);
         add(types, 31, LogEntryType.class);
         add(types, 32, CommandOutcome.class);
+        add(types, 33, org.kurin.raft.rpc.PreVoteRequest.class);
+        add(types, 34, org.kurin.raft.rpc.PreVoteResponse.class);
+        add(types, 35, org.kurin.api.ReadConsistency.class);
+        add(types, 36, org.kurin.raft.snapshot.Snapshot.class);
 
         add(types, 40, Object[].class);
         add(types, 41, String[].class);

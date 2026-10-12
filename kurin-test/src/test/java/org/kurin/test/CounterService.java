@@ -2,6 +2,10 @@ package org.kurin.test;
 
 import org.kurin.api.KurinCommand;
 import org.kurin.api.KurinQuery;
+import org.kurin.api.KurinRestore;
+import org.kurin.api.KurinSnapshot;
+
+import java.nio.ByteBuffer;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -58,6 +62,19 @@ public class CounterService {
     @KurinQuery
     public int value(GetValue query) {
         return value.get();
+    }
+
+    @KurinSnapshot
+    public byte[] snapshot() {
+        return ByteBuffer.allocate(12).putInt(value.get()).putInt(failedCommands.get()).putInt(appliedCommands.get()).array();
+    }
+
+    @KurinRestore
+    public void restore(byte[] data) {
+        ByteBuffer buffer = ByteBuffer.wrap(data);
+        value.set(buffer.getInt());
+        failedCommands.set(buffer.getInt());
+        appliedCommands.set(buffer.getInt());
     }
 
     public int value() {
