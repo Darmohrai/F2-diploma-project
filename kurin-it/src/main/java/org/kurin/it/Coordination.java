@@ -34,4 +34,24 @@ public class Coordination {
         Shared.LOCKED_RUNS.incrementAndGet();
         Shared.INSIDE_LOCK.decrementAndGet();
     }
+
+    // One lock, three answers to finding it busy
+
+    @KurinDistributedLock(key = "'it-policy'", onBusy = OnBusy.SKIP)
+    public String skipIfBusy() {
+        Shared.POLICY_RUNS.incrementAndGet();
+        return "ran";
+    }
+
+    @KurinDistributedLock(key = "'it-policy'", onBusy = OnBusy.THROW)
+    public String throwIfBusy() {
+        Shared.POLICY_RUNS.incrementAndGet();
+        return "ran";
+    }
+
+    @KurinDistributedLock(key = "'it-policy'", waitTimeout = "300ms", onBusy = OnBusy.WAIT)
+    public String waitIfBusy() {
+        Shared.POLICY_RUNS.incrementAndGet();
+        return "ran";
+    }
 }

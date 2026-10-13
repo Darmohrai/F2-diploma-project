@@ -3,6 +3,8 @@ package org.kurin.kurinlocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.kurin.api.ReadConsistency;
+import org.kurin.api.exception.KurinNoLeaderException;
+import org.kurin.api.exception.KurinTimeoutException;
 import org.kurin.kurinlocks.api.KurinLockManager;
 import org.kurin.kurinlocks.api.LockHandle;
 import org.kurin.kurinlocks.api.LockOptions;
@@ -159,9 +161,12 @@ class LockClusterTest {
         Node leader = startCluster(Duration.ofMillis(60));
         List<Node> followers = cluster.followers();
 
-        // Replication is slower than the lock manager waits: the acquire command commits after the caller gave up
+        // Replication is slower than the lock manager waits: the acquire command commits after the caller gave up.
+        // Nobody refused the lock, so this is not "busy": the caller is told that the outcome is unknown.
         followers.forEach(follower -> cluster.delay(leader, follower, Duration.ofMillis(180)));
-        assertThat(managers.get(leader).tryLock("orphan", Duration.ofMinutes(10))).isEmpty();
+        assertThatThrownBy(() -> managers.get(leader).tryLock("orphan", Duration.ofMinutes(10)))
+                .isInstanceOf(KurinTimeoutException.class)
+                .hasMessageContaining("orphan");
         cluster.heal();
 
         // The compensating release frees the lock long before its ten minute time to live
@@ -250,5 +255,97 @@ class LockClusterTest {
 
         renewed.release();
         assertThat(other.tryLock("long-task", Duration.ofSeconds(5))).isPresent();
+    }
+
+    // ---------------------------------------------------------------- 1.1.2: "unknown" is not "busy"
+
+    // Leaves one node running. It cannot elect itself and, once its election timer fired, knows no leader.
+    private Node leaveOneNodeWithoutLeader() {
+        Node survivor = cluster.node(0);
+        cluster.kill(cluster.node(1));
+        cluster.kill(cluster.node(2));
+        await("the survivor notices that it has no leader").atMost(ELECTION)
+                .until(() -> survivor.status().leaderId() == null && !survivor.status().isLeader());
+        return survivor;
+    }
+
+    @Test
+    void tryLockThrowsWhenTheClusterHasNoLeaderInsteadOfReportingBusy() {
+        startCluster(Duration.ofSeconds(2));
+        Node survivor = leaveOneNodeWithoutLeader();
+
+        assertThatThrownBy(() -> managers.get(survivor).tryLock("ledger", Duration.ofSeconds(30)))
+                .isInstanceOf(KurinNoLeaderException.class)
+                .hasMessageContaining("ledger")
+                .hasCauseInstanceOf(KurinNoLeaderException.class);
+    }
+
+    @Test
+    void lockWithWaitKeepsTryingAndThenThrowsTheLastClusterError() {
+        startCluster(Duration.ofSeconds(2));
+        Node survivor = leaveOneNodeWithoutLeader();
+        long startedNanos = System.nanoTime();
+
+        assertThatThrownBy(() -> managers.get(survivor).lock("ledger", Duration.ofSeconds(30), Duration.ofMillis(700)))
+                .isInstanceOf(KurinNoLeaderException.class)
+                .isNotInstanceOf(KurinLockAcquisitionException.class);
+
+        // It did not give up at the first failure: the whole wait was used
+        assertThat(Duration.ofNanos(System.nanoTime() - startedNanos)).isGreaterThanOrEqualTo(Duration.ofMillis(700));
+    }
+
+    @Test
+    void lockWithWaitSucceedsWhenTheClusterComesBackDuringTheWait() throws Exception {
+        startCluster(Duration.ofSeconds(2));
+        Node survivor = leaveOneNodeWithoutLeader();
+        workers = Executors.newSingleThreadExecutor();
+
+        Future<LockHandle> waiting = workers.submit(() ->
+                managers.get(survivor).lock("ledger", Duration.ofSeconds(30), Duration.ofSeconds(60)));
+        // Several attempts fail for lack of a leader before the cluster is whole again
+        await().pollDelay(Duration.ofMillis(400)).atMost(Duration.ofSeconds(5)).until(() -> !waiting.isDone());
+        cluster.restart(cluster.node(1));
+        cluster.restart(cluster.node(2));
+
+        LockHandle acquired = waiting.get(30, TimeUnit.SECONDS);
+        assertThat(acquired.isHeld()).isTrue();
+        acquired.release();
+    }
+
+    @Test
+    void busyIsStillAnEmptyResultAndAnAcquisitionException() {
+        startCluster(Duration.ofSeconds(5));
+        KurinLockManager holder = managers.get(cluster.node(0));
+        KurinLockManager other = managers.get(cluster.node(1));
+
+        try (LockHandle held = holder.lock("ledger", Duration.ofSeconds(30), Duration.ZERO)) {
+            assertThat(other.tryLock("ledger", Duration.ofSeconds(30))).isEmpty();
+            assertThat(other.tryLock("ledger", Duration.ofSeconds(30), Duration.ofMillis(200))).isEmpty();
+            assertThatThrownBy(() -> other.lock("ledger", Duration.ofSeconds(30), Duration.ofMillis(200)))
+                    .isInstanceOf(KurinLockAcquisitionException.class)
+                    .hasMessageContaining("200 ms");
+            assertThat(held.isHeld()).isTrue();
+        }
+    }
+
+    @Test
+    void undoingAnAttemptWithUnknownOutcomeDoesNotReleaseTheLockOfTheNextAttempt() throws Exception {
+        Node leader = startCluster(Duration.ofMillis(60));
+        KurinLockManager manager = managers.get(leader);
+        cluster.followers().forEach(follower -> cluster.delay(leader, follower, Duration.ofMillis(180)));
+        assertThatThrownBy(() -> manager.tryLock("retried", Duration.ofMinutes(10))).isInstanceOf(KurinTimeoutException.class);
+        cluster.heal();
+
+        // The same caller tries again. Its first attempt is undone under its own owner id, in the background.
+        try (KurinLockManager patient = new KurinLockManager(leader.kurin(), leader.service(LockStateMachine.class), Duration.ofSeconds(5))) {
+            LockHandle second = patient.lock("retried", Duration.ofMinutes(10), Duration.ofSeconds(20));
+
+            // However often the release of the first attempt is repeated, it never removes the second grant
+            await().during(Duration.ofMillis(600)).atMost(Duration.ofSeconds(5)).until(() -> {
+                LockRecord record = leader.kurin().<LockRecord>submitQuery(new GetLock("retried")).get(2, TimeUnit.SECONDS);
+                return record != null && record.fencingToken() == second.fencingToken();
+            });
+            assertThat(second.isHeld()).isTrue();
+        }
     }
 }

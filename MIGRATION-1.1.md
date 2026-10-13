@@ -368,3 +368,47 @@ Kurin 1.1.1 runs on Spring Boot 3.2 - 3.5 and on Spring Boot 4.x with the same j
   a test relies on access without a shard being refused.
 - New observation `kurin.routing.fanout` with a child `kurin.routing.fanout.shard` per shard, when an
   `ObservationRegistry` bean exists. `KurinShardOperations` has a new hook, `setInstrumentation`.
+
+---
+
+# 1.1.1 → 1.1.2
+
+1.1.2 fixes four defects. No public signature was removed or changed. Two fixes change what callers observe;
+both bring the behaviour in line with what the documentation of 1.1.0 and 1.1.1 already promised.
+
+## Locks: a cluster that cannot answer is no longer reported as "busy"
+
+`KurinLockManager.tryLock` returned `Optional.empty()`, and `lock` and `@KurinDistributedLock(onBusy = THROW)`
+threw `KurinLockAcquisitionException`, both when another owner held the lock and when the cluster gave no answer
+at all (no leader, a node out of reach, a timeout). The READMEs said that the two are never confused. Now they
+are not:
+
+| Outcome | `tryLock` | `lock`, `KurinLockTemplate.executeWithLock` | `@KurinDistributedLock` |
+|---|---|---|---|
+| another owner holds the lock | empty | `KurinLockAcquisitionException` | as `onBusy` says |
+| the cluster gave no definite answer | throws | throws | throws, whatever `onBusy` says |
+
+What is thrown in the second row is `KurinNoLeaderException`, `KurinRemoteException` or
+`KurinTimeoutException`, with the original failure as the cause. All are `KurinException`s; none is a
+`KurinLockAcquisitionException`.
+
+What to check in your code:
+
+- **`tryLock(...)` without a try/catch**, where "empty" was read as "someone else is doing it": it can now throw.
+  If skipping is what you want in both cases, catch `KurinException`; more often the two deserve different
+  handling, which is the point of the fix.
+- **`@KurinDistributedLock` with `onBusy = SKIP`** on a method triggered by `@Scheduled` or a message listener:
+  when the cluster is unavailable the method used to be skipped silently and now throws into the scheduler or
+  the listener container, which log it. The method body still does not run.
+- **`catch (KurinLockAcquisitionException e)`** now handles "busy" only. A cluster failure passes it by.
+- **With a `waitTimeout`**, attempts that got no answer are repeated until the wait is over, as before; if the
+  last one still got none, its exception is thrown instead of `KurinLockAcquisitionException`.
+
+`@KurinScheduledOnce` and `KurinJobs.runOnce` keep returning without running the job when the claim of a slot
+gets no answer. The difference is that this is now logged at WARN and counted separately
+(`kurin.jobs.claims{result="unknown"}`) instead of being counted as `denied`.
+
+New, additive API: `KurinLockManager.LockListener.onAcquireFailed` / `onReleaseUnconfirmed` and
+`KurinJobs.JobListener.onClaimUnknown` (default methods), constructors with a cause on `KurinNoLeaderException`
+and `KurinTimeoutException`, meters `kurin.locks.acquire{result="unknown"}` and
+`kurin.locks.release.unconfirmed`.

@@ -177,6 +177,9 @@ There are three clocks, and they are not interchangeable:
 - A lock is a **lease** of `ttl`. A holder that pauses longer than the ttl (GC, a stalled VM, a partition) may still
   be running when the lock is granted to someone else. `LockHandle.isHeld()` is conservative but cannot stop a
   thread. For resources that must never see two writers, check the fencing token at the resource.
+- **"Busy" and "unknown" are different outcomes.** An empty result or a `KurinLockAcquisitionException` means that
+  another owner holds the lock. When the cluster gave no definite answer, the caller gets `KurinNoLeaderException`,
+  `KurinRemoteException` or `KurinTimeoutException`, with `@KurinDistributedLock` whatever `onBusy` says.
 - A lock request whose outcome is unknown is undone in the background; it does not linger until its ttl.
 
 ### Run-once jobs

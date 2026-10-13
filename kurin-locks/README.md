@@ -20,6 +20,7 @@ Optional<LockHandle> maybe = manager.tryLock("report", Duration.ofMinutes(1));  
 
 - `tryLock` returns empty when the lock is busy; `lock` throws `KurinLockAcquisitionException` after the wait.
   Both throw a `KurinException` when the cluster cannot answer: "busy" and "unknown" are never confused.
+  See [Busy and unknown](#busy-and-unknown).
 - The owner is the handle, not the thread: a handle can be released from another thread. With
   `reentrant(true)` the thread that holds a key enters again locally.
 - `fencingToken()` is the log index of the grant: strictly larger for every later grant of any key.
@@ -33,6 +34,37 @@ resource and have it reject smaller tokens.
 
 Expiry is deterministic: all nodes agree on which locks are expired, because expiry is decided by log time when a
 command is applied, never by a node's own clock.
+
+### Busy and unknown
+
+An acquisition has three outcomes, and the caller can tell them apart:
+
+| The cluster answered | `tryLock` | `lock` |
+|---|---|---|
+| granted | the handle | the handle |
+| another owner holds the lock | empty | `KurinLockAcquisitionException` |
+| nothing definite | the `KurinException` that says why | the same exception |
+
+"Nothing definite" keeps its kind, with the original failure as the cause: `KurinNoLeaderException` while there
+is no leader, `KurinRemoteException` when a node could not be reached or the connection broke,
+`KurinTimeoutException` when no answer came within the command timeout. None of them is a
+`KurinLockAcquisitionException`, so `catch (KurinLockAcquisitionException e)` handles "busy" and nothing else.
+
+With a wait (`waitTimeout`), an attempt that got no definite answer is repeated like one that found the lock
+busy, until the wait is over: a cluster without a leader usually has one again within an election timeout. What
+the last attempt found decides the outcome: busy gives empty, no answer gives its exception. With a wait of zero
+there is one attempt. Failures that waiting cannot cure (the node is shut down, a type is not registered) are
+thrown at once.
+
+An attempt without a definite answer may have been granted after the caller stopped waiting. Every attempt has an
+owner id of its own, and the manager releases exactly that id in the background, up to five times. The release
+is idempotent and cannot touch the grant of a later attempt, not even one of the same caller. If it cannot be
+confirmed either, a warning is logged, `LockListener.onReleaseUnconfirmed` is called, and the lock, if it
+exists, ends with its ttl. When there was no leader, nothing was submitted and nothing is released.
+
+`KurinJobs.runOnce` treats a claim without a definite answer differently, because a trigger on a schedule has
+nobody to throw to: the run is skipped, a warning is logged and `JobListener.onClaimUnknown` is called. The job
+body never runs without a grant.
 
 ## Leader tasks
 

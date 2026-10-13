@@ -24,7 +24,12 @@ public Summary runImport() { ... }
 | `autoRenew` | `false` | Extend the lease every third of the ttl while the method runs. |
 | `reentrant` | `false` | The thread that holds the key enters again. |
 
-When the cluster cannot answer, the method does not run and a `KurinException` is thrown, whatever `onBusy` says.
+`onBusy` decides about a lock that another owner holds, and about nothing else. When the cluster cannot answer,
+the method does not run and a `KurinException` is thrown, whatever `onBusy` says, `SKIP` included:
+`KurinNoLeaderException` without a leader, `KurinRemoteException` when a node is out of reach,
+`KurinTimeoutException` when no answer came in time. None of them is a `KurinLockAcquisitionException`. With a
+`waitTimeout`, attempts without an answer are repeated until the wait is over, and the exception of the last one
+is thrown. Details: [kurin-locks](../kurin-locks/README.md#busy-and-unknown).
 
 ## `@KurinLeaderOnly`
 
@@ -69,6 +74,10 @@ Every instance fires the schedule; one runs per slot. Set `slot` to the period o
 within `lease`, so the method has to tolerate a second run. **Instance clocks must agree to well within half a
 slot.**
 
+When the cluster gives no definite answer to the claim of a slot, the method does not run on this instance: the
+run is skipped with a warning in the log and counted as `kurin.jobs.claims{result="unknown"}`. No exception
+reaches the scheduler.
+
 ## Programmatic use
 
 `KurinLockManager`, `KurinLeaderTasks`, `KurinJobs` are beans. `KurinLockTemplate` wraps the common shapes:
@@ -77,6 +86,9 @@ slot.**
 lockTemplate.executeWithLock("invoice:" + id, Duration.ofSeconds(30), () -> settle(id));
 Optional<Report> report = lockTemplate.tryExecuteWithLock("report", Duration.ofMinutes(1), this::build);
 ```
+
+Both follow the rule of the annotation: empty or `KurinLockAcquisitionException` for a busy lock, the
+`KurinException` of the failure when the cluster cannot answer.
 
 ## Startup checks
 
@@ -90,10 +102,11 @@ task. Leader tasks start only after the node has started.
 
 | Meter | Type | Tags |
 |---|---|---|
-| `kurin.locks.acquire` | counter | `result` = `acquired`, `busy` |
+| `kurin.locks.acquire` | counter | `result` = `acquired`, `busy`, `unknown` (the cluster gave no definite answer) |
 | `kurin.locks.wait.duration` | timer | |
 | `kurin.locks.held` | gauge: locks held by this instance | |
-| `kurin.jobs.claims` | counter | `job`, `result` = `granted`, `denied` |
+| `kurin.locks.release.unconfirmed` | counter: releases that could not be confirmed after their retries | |
+| `kurin.jobs.claims` | counter | `job`, `result` = `granted`, `denied`, `unknown` |
 | `kurin.jobs.duration` | timer | `job`, `status` = `succeeded`, `failed` |
 
 Observation `kurin.lock.acquire` covers acquisition including the wait. `/actuator/kurin` gets a `coordination`

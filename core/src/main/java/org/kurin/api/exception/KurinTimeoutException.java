@@ -8,4 +8,8 @@ public class KurinTimeoutException extends KurinException {
     public KurinTimeoutException(String message) {
         super(message);
     }
+
+    public KurinTimeoutException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

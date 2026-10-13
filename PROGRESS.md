@@ -726,3 +726,96 @@ lines that pass, and the API Kurin uses did not change inside the 3.x line.
   release is tagged in that repository, the group id in the README has to be changed accordingly.
 - **`kurin-it-boot3` and `kurin-it-boot4` are built by JitPack but not published**: `maven.install.skip` keeps
   them out of the local repository JitPack collects artifacts from.
+
+---
+
+# Kurin 1.1.2
+
+Work follows `KURIN_1.1.2_FIXES_CLAUDE_CODE_PROMPT.md`: four defects found while an application was integrated
+with Kurin 1.1.1, phase by phase, on branch `feature/kurin-1.1.2`. For every defect a test was written first and
+run against the code of 1.1.1; what it reported there is recorded below, then the fix.
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | `KurinLockManager`: "unknown" is not "busy" | done |
+| 2 | Transport: the reconnection pause blocks forwarding to the leader | in progress |
+| 3 | `@KurinLeaderTask`: placeholders in `interval` | pending |
+| 4 | `DataSourceHealthMonitor`: false DOWN under load | pending |
+| 5 | Release 1.1.2 | pending |
+
+## 1.1.2, phase 1: "unknown" is not "busy"
+
+### The defect, reproduced on 1.1.1
+
+`KurinLockManager.attempt` turned every failure of the `AcquireLock` command (no leader, a node out of reach, no
+answer in time) into `Optional.empty()`, the same value as "another owner holds the lock". Tests written against
+the API of 1.1.1 and run on its code:
+
+| Test | Result on 1.1.1 |
+|---|---|
+| `LockClusterTest.tryLockThrowsWhenTheClusterHasNoLeaderInsteadOfReportingBusy` | `Expecting code to raise a throwable.` (`tryLock` returned empty on a node without a leader) |
+| `LockClusterTest.lockWithWaitKeepsTryingAndThenThrowsTheLastClusterError` | `Expecting actual throwable to be an instance of: KurinNoLeaderException but was: KurinLockAcquisitionException` |
+| `LockClusterTest.acquisitionWithUnknownOutcomeLeavesNoLockBehind` (assertion changed from "is empty" to "throws `KurinTimeoutException`") | `Expecting code to raise a throwable.` |
+| `LockClusterTest.undoingAnAttemptWithUnknownOutcomeDoesNotReleaseTheLockOfTheNextAttempt` | `Expecting code to raise a throwable.` |
+| `UnknownOutcomeTest.instanceCutOffFromTheClusterThrowsWhateverOnBusySays` (starter) | `Expecting code to raise a throwable.` (`@KurinDistributedLock(onBusy = SKIP)` returned null on an isolated instance) |
+
+`lockWithWaitSucceedsWhenTheClusterComesBackDuringTheWait` and `busyIsStillAnEmptyResultAndAnAcquisitionException`
+passed on 1.1.1 as well: they guard behaviour that must stay.
+
+### Done
+
+- **`KurinLockManager`** returns empty only when the state machine answered "denied". A failure of the command
+  is thrown as a `KurinException` of the same kind, with the lock key in the message and the original as the
+  cause: `KurinNoLeaderException`, `KurinRemoteException`, `KurinTimeoutException` (also when the future of the
+  node itself gives no result in time). Other `KurinException`s (`KurinNotLeaderException`,
+  `KurinStorageException`, ...) reach the caller unchanged; anything else is wrapped in a `KurinException`.
+  `KurinNoLeaderException` and `KurinTimeoutException` got a constructor with a cause.
+- **Waiting (`waitTimeout`).** An attempt without a definite answer is repeated like a refused one until the
+  wait is over; what the last attempt found decides: busy gives empty (`KurinLockAcquisitionException` from
+  `lock`), no answer gives its exception. Failures that waiting cannot cure (`KurinNotStartedException`,
+  `KurinSerializationException`, `KurinCommandFailedException`, a non-Kurin failure) are thrown at once.
+- **The release that undoes an attempt** is kept. It names the owner id of the attempt, which is a fresh UUID per
+  attempt, so it is idempotent and cannot release the grant of a later attempt of the same caller
+  (`undoingAnAttemptWithUnknownOutcomeDoesNotReleaseTheLockOfTheNextAttempt`). It is no longer sent after
+  `KurinNoLeaderException`, which means that nothing was submitted. Its final failure was already logged at WARN;
+  it is now also reported to `LockListener.onReleaseUnconfirmed` and counted as
+  `kurin.locks.release.unconfirmed`. A retry that could not be scheduled because the manager was closed used to
+  vanish inside a `CompletableFuture`; it is reported the same way.
+- **`@KurinDistributedLock`**: the aspect needed no change in logic, only the manager did: `onBusy` is applied
+  to an empty result, which now means busy and nothing else. `KurinLockTemplate` likewise.
+- **`@KurinScheduledOnce` / `KurinJobs.runOnce`** does not use `attempt`, but had the same blind spot: a claim
+  without an answer was logged at DEBUG and counted as `denied`. The run is still skipped (a schedule has nobody
+  to throw to), now with a WARN, `JobListener.onClaimUnknown` and `kurin.jobs.claims{result="unknown"}`.
+  `@KurinLeaderTask` asks only the local node (`leadership()`), so it has no such case.
+- Meters: `kurin.locks.acquire{result="unknown"}`, `kurin.locks.release.unconfirmed`,
+  `kurin.jobs.claims{result="unknown"}`. The new listener methods are `default`, so existing listeners compile.
+- Tests: `KurinLockManagerOutcomeTest` (16, a scripted cluster behind the manager that gives every kind of
+  answer), `LockClusterTest` (+5), `JobAndLeaderClusterTest` (+1), `UnknownOutcomeTest` in the starter (3: every
+  `onBusy` for a busy lock, every `onBusy` for an isolated instance, a skipped job), `LockOutcomeTest` in
+  `kurin-it` (2, two instances: busy, and the leader gone), on Spring Boot 3 and 4.
+
+### Decisions and deviations
+
+- **A seam in `KurinLockManager`.** `KurinNode` is a class with a private constructor, so a cluster that fails in
+  a chosen way could not be put behind the manager. The manager now talks to a package-private interface
+  `Cluster` (four methods); the public constructor wraps the node. No public signature changed.
+- **With a wait, the outcome is that of the last attempt, not "the last exception seen".** The spec says to
+  throw the last `KurinException` when the time is up. If the cluster recovered during the wait and the last
+  attempt was refused, the true answer is "busy", and that is what is returned.
+- **Not every failure is retried during the wait**: see above. Retrying a command that cannot be serialized for
+  the whole wait would only delay the same exception.
+- **A theoretical leftover of the undo.** If the acquire command is delayed in the network past all five
+  releases and is then committed, the lock stays until its ttl. This needs a message that overtakes five later
+  ones to the same leader; it is the documented fallback ("it expires with its time to live"), not a new case.
+- **`LockOutcomeTest` exposed the defect of phase 2 on its first run**: the instance that had started first
+  answered `KurinRemoteException: ... Node 127.0.0.1:58709 is unreachable, next connection attempt is delayed`
+  to a lock request right after the election. Before this phase the same failure was reported as "busy". Until
+  phase 2 the test waits for the command path of both instances before it begins.
+- **A flaky test that this phase did not touch was fixed.** The full build failed once in
+  `RoutingIntegrationTest.readYourWritesHoldsAcrossTwoInstancesThroughTheToken` (`expected: "primary" but was:
+  "replica"`): the test used a sticky window of 400 ms, and the JVM paused longer than that between the write
+  and the read that had to fall inside the window. For that test the window is now 3 s and the wait for its end
+  20 s. A second test of the class, `annotationsAndTransactionsSelectPrimaryOrReplica`, turned out to depend on
+  the opposite: it writes, then starts a second context on the same thread and expects a read on the replica,
+  which worked only because a context takes longer than 400 ms to start. Its second context now sets a window of
+  1 ms, so the write is outside of it however fast the start is.

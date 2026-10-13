@@ -55,6 +55,12 @@ public @interface KurinDistributedLock {
      */
     String waitTimeout() default "PT0S";
 
+    /**
+     * What to do when another owner holds the lock. It does not cover a cluster that cannot answer: then nothing
+     * is known about the lock, the method does not run and the {@code KurinException} that says why
+     * ({@code KurinNoLeaderException}, {@code KurinRemoteException}, {@code KurinTimeoutException}) is thrown,
+     * with {@code SKIP} as well.
+     */
     OnBusy onBusy() default OnBusy.SKIP;
 
     /**

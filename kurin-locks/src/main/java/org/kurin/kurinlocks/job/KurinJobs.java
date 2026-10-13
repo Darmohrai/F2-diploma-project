@@ -43,6 +43,13 @@ public class KurinJobs {
         void onClaim(String jobName, boolean granted);
 
         void onRun(String jobName, boolean success, Duration duration);
+
+        /**
+         * The cluster gave no definite answer to a claim: the job did not run here, and it is not known whether
+         * another node owns the slot. Reported instead of {@link #onClaim}.
+         */
+        default void onClaimUnknown(String jobName, Throwable cause) {
+        }
     }
 
     private final KurinNode node;
@@ -83,16 +90,21 @@ public class KurinJobs {
     /**
      * Runs the job if the cluster grants the current slot to this node.
      *
-     * @return the result of the job, or empty if another node owns the slot or the cluster gave no answer
+     * @return the result of the job, or empty if the job did not run here: another node owns the slot, or the
+     * cluster gave no definite answer to the claim. The second case is logged as a warning and reported to
+     * {@link JobListener#onClaimUnknown}; a trigger that fires on a schedule has nobody to throw to.
      * @throws Exception whatever the job throws; the failure is recorded in the job history first
      */
     public <T> Optional<T> runOnce(String jobName, Duration slotDuration, JobMode mode, Duration lease, Callable<T> job) throws Exception {
         long slot = slotOf(System.currentTimeMillis(), slotDuration);
         String ownerId = node.nodeId() + ":" + UUID.randomUUID();
 
-        Optional<ClaimResult> claim = claim(jobName, slot, ownerId, mode, lease);
-        boolean granted = claim.isPresent() && claim.get().granted();
         knownJobs.add(jobName);
+        Optional<ClaimResult> claim = claim(jobName, slot, ownerId, mode, lease);
+        if (claim.isEmpty()) {
+            return Optional.empty();
+        }
+        boolean granted = claim.get().granted();
         listeners.forEach(listener -> listener.onClaim(jobName, granted));
         if (!granted) {
             return Optional.empty();
@@ -119,6 +131,7 @@ public class KurinJobs {
         listeners.forEach(listener -> listener.onRun(jobName, success, duration));
     }
 
+    // Empty when nothing definite is known about the claim
     private Optional<ClaimResult> claim(String jobName, long slot, String ownerId, JobMode mode, Duration lease) {
         try {
             return Optional.of(node.<ClaimResult>submitCommand(
@@ -126,13 +139,19 @@ public class KurinJobs {
                     .get(commandTimeout.toMillis() + 1000, TimeUnit.MILLISECONDS));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return Optional.empty();
+            return claimUnknown(jobName, slot, e);
         } catch (ExecutionException | TimeoutException e) {
-            // Without a definite grant the job does not run here. If the claim was committed after all, the slot
-            // simply stays unexecuted in AT_MOST_ONCE mode or is taken over after the lease in AT_LEAST_ONCE mode.
-            log.debug("Claim of slot {} of job '{}' got no definite answer: {}", slot, jobName, e.toString());
-            return Optional.empty();
+            return claimUnknown(jobName, slot, e instanceof ExecutionException ? e.getCause() : e);
         }
+    }
+
+    // Without a definite grant the job does not run here. If the claim was committed after all, the slot
+    // simply stays unexecuted in AT_MOST_ONCE mode or is taken over after the lease in AT_LEAST_ONCE mode.
+    private Optional<ClaimResult> claimUnknown(String jobName, long slot, Throwable cause) {
+        log.warn("Slot {} of job '{}' is skipped on {}: the cluster gave no definite answer to the claim ({})",
+                slot, jobName, node.nodeId(), cause.toString());
+        listeners.forEach(listener -> listener.onClaimUnknown(jobName, cause));
+        return Optional.empty();
     }
 
     private void complete(String jobName, long slot, String ownerId, boolean success, String error) {

@@ -252,8 +252,11 @@ class RoutingIntegrationTest {
             // Without the opt-in a read-only transaction says nothing about replicas
             assertThat(items.readOnlyTransaction()).isEqualTo("primary");
         });
-        runner(databases.single()).withPropertyValues("kurin.routing.readonly-transactions-to-replica=true").run(context ->
-                assertThat(context.getBean(Items.class).readOnlyTransaction()).isEqualTo("replica"));
+        // This thread has just written, which keeps its reads on the primary for the sticky window. The window
+        // is made too short to matter, so that the outcome does not depend on how long the context takes to start.
+        runner(databases.single())
+                .withPropertyValues("kurin.routing.readonly-transactions-to-replica=true", "kurin.routing.sticky-window=1ms")
+                .run(context -> assertThat(context.getBean(Items.class).readOnlyTransaction()).isEqualTo("replica"));
     }
 
     // Spec test 25
@@ -301,7 +304,9 @@ class RoutingIntegrationTest {
     void readYourWritesHoldsAcrossTwoInstancesThroughTheToken() {
         Databases databases = new Databases();
         // Two application instances behind a load balancer: separate contexts, the same databases
-        runner(databases.single()).run(first -> runner(databases.single()).run(second -> {
+        // The window is longer than any pause of the JVM between the write and the reads that must fall inside it
+        ApplicationContextRunner instance = runner(databases.single()).withPropertyValues("kurin.routing.sticky-window=3s");
+        instance.run(first -> instance.run(second -> {
             AtomicReference<String> answer = new AtomicReference<>();
 
             // A client that has not written reads from the replica and gets no token
@@ -327,7 +332,7 @@ class RoutingIntegrationTest {
             assertThat(answer.get()).isEqualTo("replica");
 
             // After the sticky window the replica is trusted again
-            await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
                 request(second, token, answer, Items::read);
                 assertThat(answer.get()).isEqualTo("replica");
             });

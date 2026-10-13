@@ -3,6 +3,7 @@ package org.kurin.kurinlocksspringbootstarter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.kurin.api.ReadConsistency;
+import org.kurin.api.exception.KurinException;
 import org.kurin.kurinlocks.api.KurinLockManager;
 import org.kurin.kurinlocks.command.LockCommands.CountLocks;
 import org.kurin.kurinlocks.job.KurinJobs;
@@ -25,7 +26,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Optional metrics and Actuator section of locks and jobs.
  * <p>
  * Meters: {@code kurin.locks.acquire{result}}, {@code kurin.locks.wait.duration}, {@code kurin.locks.held},
- * {@code kurin.jobs.claims{job,result}}, {@code kurin.jobs.duration{job,status}}.
+ * {@code kurin.locks.release.unconfirmed}, {@code kurin.jobs.claims{job,result}},
+ * {@code kurin.jobs.duration{job,status}}.
  */
 @AutoConfiguration(after = KurinLocksAutoConfiguration.class, afterName = {
         // Spring Boot 3 names, then the names the same classes have in Spring Boot 4
@@ -63,11 +65,27 @@ public class KurinLocksObservabilityAutoConfiguration {
                     public void onRelease(String key) {
                         held.decrementAndGet();
                     }
+
+                    @Override
+                    public void onAcquireFailed(String key, Duration waited, KurinException cause) {
+                        registry.counter("kurin.locks.acquire", "result", "unknown").increment();
+                        registry.timer("kurin.locks.wait.duration").record(waited.toNanos(), TimeUnit.NANOSECONDS);
+                    }
+
+                    @Override
+                    public void onReleaseUnconfirmed(String key) {
+                        registry.counter("kurin.locks.release.unconfirmed").increment();
+                    }
                 });
                 jobs.addListener(new KurinJobs.JobListener() {
                     @Override
                     public void onClaim(String jobName, boolean granted) {
                         registry.counter("kurin.jobs.claims", "job", jobName, "result", granted ? "granted" : "denied").increment();
+                    }
+
+                    @Override
+                    public void onClaimUnknown(String jobName, Throwable cause) {
+                        registry.counter("kurin.jobs.claims", "job", jobName, "result", "unknown").increment();
                     }
 
                     @Override

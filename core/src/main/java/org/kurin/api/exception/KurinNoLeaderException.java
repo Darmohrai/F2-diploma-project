@@ -7,4 +7,8 @@ public class KurinNoLeaderException extends KurinException {
     public KurinNoLeaderException(String message) {
         super(message);
     }
+
+    public KurinNoLeaderException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

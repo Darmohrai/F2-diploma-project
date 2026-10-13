@@ -24,7 +24,8 @@ public class KurinLockTemplate {
     /**
      * Runs the action under the lock.
      *
-     * @throws KurinLockAcquisitionException if the lock is busy
+     * @throws KurinLockAcquisitionException          if the lock is busy
+     * @throws org.kurin.api.exception.KurinException if the cluster gave no definite answer; the action did not run
      */
     public void executeWithLock(String key, Duration ttl, Runnable action) {
         executeWithLock(key, LockOptions.ttl(ttl), handle -> {
@@ -40,7 +41,8 @@ public class KurinLockTemplate {
     /**
      * Runs the action under the lock, waiting up to {@code waitTimeout} for a busy lock.
      *
-     * @throws KurinLockAcquisitionException if the lock was not obtained in time
+     * @throws KurinLockAcquisitionException          if the lock was still busy when the wait ended
+     * @throws org.kurin.api.exception.KurinException if the cluster gave no definite answer; the action did not run
      */
     public <T> T executeWithLock(String key, Duration ttl, Duration waitTimeout, Supplier<T> action) {
         return executeWithLock(key, LockOptions.ttl(ttl).waitTimeout(waitTimeout), handle -> action.get());
@@ -59,6 +61,7 @@ public class KurinLockTemplate {
      * Runs the action if the lock is free.
      *
      * @return the result of the action, or empty if the lock is busy and the action did not run
+     * @throws org.kurin.api.exception.KurinException if the cluster gave no definite answer; the action did not run
      */
     public <T> Optional<T> tryExecuteWithLock(String key, Duration ttl, Supplier<T> action) {
         Optional<LockHandle> acquired = lockManager.tryLock(key, ttl);

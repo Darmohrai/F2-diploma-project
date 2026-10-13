@@ -179,6 +179,44 @@ class JobAndLeaderClusterTest {
         assertThat(node.runOnce("flaky", Duration.ofDays(365), JobMode.AT_LEAST_ONCE, Duration.ofSeconds(5), () -> "again")).isEmpty();
     }
 
+    // 1.1.2: a claim without a definite answer is a skipped run that is reported, not a quiet "denied"
+    @Test
+    void claimWithoutAnAnswerSkipsTheRunAndIsReportedAsUnknown() throws Exception {
+        startCluster();
+        Node survivor = cluster.node(0);
+        cluster.kill(cluster.node(1));
+        cluster.kill(cluster.node(2));
+        await().atMost(ELECTION).until(() -> survivor.status().leaderId() == null && !survivor.status().isLeader());
+
+        List<String> events = new CopyOnWriteArrayList<>();
+        KurinJobs alone = jobs.get(survivor);
+        alone.addListener(new KurinJobs.JobListener() {
+            @Override
+            public void onClaim(String jobName, boolean granted) {
+                events.add("claim " + jobName + " " + granted);
+            }
+
+            @Override
+            public void onRun(String jobName, boolean success, Duration duration) {
+                events.add("run " + jobName);
+            }
+
+            @Override
+            public void onClaimUnknown(String jobName, Throwable cause) {
+                events.add("unknown " + jobName + " " + cause.getClass().getSimpleName());
+            }
+        });
+        AtomicInteger executions = new AtomicInteger();
+
+        Optional<Integer> result = alone.runOnce("report", Duration.ofDays(365), JobMode.AT_MOST_ONCE, Duration.ofSeconds(5),
+                executions::incrementAndGet);
+
+        assertThat(result).isEmpty();
+        assertThat(executions.get()).isZero();
+        assertThat(events).containsExactly("unknown report KurinNoLeaderException");
+        assertThat(alone.knownJobs()).contains("report");
+    }
+
     @Test
     void historyKeepsOnlyTheConfiguredNumberOfSlotsAndPrunedSlotsStayClaimed() throws Exception {
         startCluster();

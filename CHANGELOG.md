@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.1.2
+
+Four defects found while an application was integrated with 1.1.1. No public signature changed; what callers
+observe differently is described in [MIGRATION-1.1.md](MIGRATION-1.1.md), section "1.1.1 → 1.1.2". Each fix names
+the tests that failed on 1.1.1 and pass now.
+
+### Fixed
+
+- **A lock request that the cluster could not answer was reported as "busy".** `KurinLockManager.tryLock`
+  returned empty, and `lock` and `@KurinDistributedLock(onBusy = THROW)` threw `KurinLockAcquisitionException`,
+  when there was no leader, a node was out of reach or no answer came in time, although the documentation
+  promised that "busy" and "unknown" are never confused. Now empty means that another owner holds the lock, and
+  a cluster failure is thrown as `KurinNoLeaderException`, `KurinRemoteException` or `KurinTimeoutException`
+  with its cause, whatever `onBusy` says. With a wait, attempts without an answer are repeated until the wait is
+  over and the exception of the last one is thrown. A claim of `@KurinScheduledOnce` without an answer still
+  skips the run, now with a warning and its own counter.
+  Tests: `KurinLockManagerOutcomeTest`, `LockClusterTest` (`tryLockThrowsWhenTheClusterHasNoLeaderInsteadOfReportingBusy`,
+  `lockWithWaitKeepsTryingAndThenThrowsTheLastClusterError`, `acquisitionWithUnknownOutcomeLeavesNoLockBehind`,
+  `undoingAnAttemptWithUnknownOutcomeDoesNotReleaseTheLockOfTheNextAttempt`),
+  `JobAndLeaderClusterTest.claimWithoutAnAnswerSkipsTheRunAndIsReportedAsUnknown`, `UnknownOutcomeTest`,
+  `LockOutcomeTest` (`kurin-it`).
+
+### Added
+
+- Meters `kurin.locks.acquire{result="unknown"}`, `kurin.locks.release.unconfirmed`,
+  `kurin.jobs.claims{result="unknown"}`; `LockListener.onAcquireFailed` / `onReleaseUnconfirmed`,
+  `JobListener.onClaimUnknown`.
+
 ## 1.1.1
 
 Fixes after the review of 1.1.0. Breaking changes and how to adapt are in

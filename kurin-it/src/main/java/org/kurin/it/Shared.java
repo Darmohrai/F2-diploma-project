@@ -25,6 +25,11 @@ public final class Shared {
     public static final AtomicInteger MOST_INSIDE_LOCK = new AtomicInteger();
     public static final AtomicInteger LOCKED_RUNS = new AtomicInteger();
 
+    /**
+     * Runs of the methods that show what each busy policy of a lock does.
+     */
+    public static final AtomicInteger POLICY_RUNS = new AtomicInteger();
+
     private Shared() {
     }
 
@@ -33,5 +38,6 @@ public final class Shared {
         INSIDE_LOCK.set(0);
         MOST_INSIDE_LOCK.set(0);
         LOCKED_RUNS.set(0);
+        POLICY_RUNS.set(0);
     }
 }

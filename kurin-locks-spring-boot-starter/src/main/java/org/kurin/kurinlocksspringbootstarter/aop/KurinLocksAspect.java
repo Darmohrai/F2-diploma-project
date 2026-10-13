@@ -82,6 +82,8 @@ public class KurinLocksAspect {
         LockPlan plan = lockPlans.computeIfAbsent(method, m -> lockPlan(m, kurinLock));
         String key = evaluateKey(plan, method, joinPoint);
 
+        // Empty means busy and nothing else. When the cluster gave no definite answer, tryLock throws the
+        // KurinException that says why, and it leaves this advice whatever onBusy is: the method does not run.
         Optional<LockHandle> acquired = lockManager.tryLock(key, plan.options());
         if (acquired.isEmpty()) {
             if (plan.onBusy() == KurinDistributedLock.OnBusy.SKIP) {
