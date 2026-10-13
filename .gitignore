@@ -38,3 +38,4 @@ Thumbs.db
 # Kurin runtime data
 raft-data-*/
 kurin-data/
+stability-failures/

@@ -36,13 +36,56 @@ The starters use only API that is the same in both generations; the health API, 
 adapter modules. An application without Actuator needs neither. How this was established, class by class, is in
 [docs/boot-compatibility.md](docs/boot-compatibility.md).
 
+## Getting it through JitPack
+
+Kurin is published through [JitPack](https://jitpack.io), which builds a tag of the repository on demand. Add
+the repository and the modules you need; the version is the tag.
+
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependencies>
+    <dependency>
+        <groupId>com.github.Darmohrai.F2-diploma-project</groupId>
+        <artifactId>kurin-locks-spring-boot-starter</artifactId>
+        <version>1.1.1</version>
+    </dependency>
+    <!-- with Actuator: the adapter for your Spring Boot generation -->
+    <dependency>
+        <groupId>com.github.Darmohrai.F2-diploma-project</groupId>
+        <artifactId>kurin-actuator-boot3</artifactId>   <!-- kurin-actuator-boot4 on Spring Boot 4 -->
+        <version>1.1.1</version>
+    </dependency>
+</dependencies>
+```
+
+Gradle: `maven { url 'https://jitpack.io' }` and
+`implementation 'com.github.Darmohrai.F2-diploma-project:kurin-locks-spring-boot-starter:1.1.1'`.
+
+| Artifact | Use it for |
+|---|---|
+| `kurin-spring-boot-starter` | a Kurin node in a Spring Boot application, `KurinTemplate`, replicated services |
+| `kurin-locks-spring-boot-starter` | `@KurinDistributedLock`, `@KurinLeaderOnly`, `@KurinLeaderTask`, `@KurinScheduledOnce`; brings the node starter |
+| `kurin-cache-spring-boot-starter` | `@KurinCacheable`, `@KurinCacheEvict`, `@KurinCachePut`; brings the node starter |
+| `kurin-data-routing-spring-boot-starter` | read/write splitting and shards; independent of the node |
+| `kurin-actuator-boot3` / `kurin-actuator-boot4` | health indicators, for Spring Boot 3.2 - 3.5 / 4.x |
+| `kurin-test` | test scope: an in-process cluster with fault injection |
+| `core`, `kurin-locks`, `kurin-tiered-cache`, `kurin-data-routing` | the same without Spring |
+
+Inside this build, and when the modules are installed locally with `./mvnw install`, the group id is `org.kurin`.
+
 ## Quick start
 
 ```xml
 <dependency>
-    <groupId>org.kurin</groupId>
+    <groupId>com.github.Darmohrai.F2-diploma-project</groupId>
     <artifactId>kurin-locks-spring-boot-starter</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 </dependency>
 ```
 
@@ -277,8 +320,10 @@ by the Raft thread carry the MDC keys `kurin.node`, `kurin.term`, `kurin.role`.
 ## Building
 
 ```
-./mvnw clean install                 # all modules with tests
-./mvnw -pl kurin-locks -am test      # one module and what it depends on
+./mvnw clean install                         # all modules with tests, starters on Spring Boot 3.2
+./mvnw -Pboot4 clean install                 # the same with the starters on Spring Boot 4
+./mvnw -pl kurin-locks -am test              # one module and what it depends on
+scripts/stability.sh kurin-test,kurin-locks 20   # the tests of some modules twenty times in a row
 ```
 
-Upgrading from 1.0.x: see [MIGRATION-1.1.md](MIGRATION-1.1.md).
+Upgrading from 1.0.x or 1.1.0: see [MIGRATION-1.1.md](MIGRATION-1.1.md). What changed: [CHANGELOG.md](CHANGELOG.md).

@@ -76,7 +76,8 @@ class ExternalTierTest {
     void ttlAndNullTtlReachTheExternalStore() throws Exception {
         TieredCache cache = manager(Duration.ofSeconds(2), 5, Duration.ofSeconds(10)).getCache("offers", List.of(CacheTier.L3));
         assertThat(cache.tiers()).containsExactly(CacheTier.L3);
-        ReadOptions options = options(ttl(Duration.ofMinutes(5)).withNullTtl(Duration.ofMillis(300)), true);
+        // Long enough that a pause of the JVM between storing the null and looking at it does not let it expire unseen
+        ReadOptions options = options(ttl(Duration.ofMinutes(5)).withNullTtl(Duration.ofSeconds(3)), true);
         AtomicInteger loads = new AtomicInteger();
 
         assertThat(reader.read(cache, "present", options, () -> "value-" + loads.incrementAndGet())).isEqualTo("value-1");
@@ -92,7 +93,7 @@ class ExternalTierTest {
         assertThat(loads.get()).isEqualTo(2);
 
         // The store itself drops the negative entry after its short ttl; the positive one stays
-        await().atMost(Duration.ofSeconds(5)).until(() -> !store.contains("kurin:offers:absent"));
+        await().atMost(Duration.ofSeconds(10)).until(() -> !store.contains("kurin:offers:absent"));
         assertThat(store.contains("kurin:offers:present")).isTrue();
         assertThat(reader.read(cache, "absent", options, () -> "appeared")).isEqualTo("appeared");
     }
@@ -152,7 +153,9 @@ class ExternalTierTest {
         for (int i = 0; i < 50; i++) {
             assertThat(reader.read(cache, "warm", options, () -> "from source")).isEqualTo("from source");
         }
-        assertThat(System.nanoTime() - started).isLessThan(timeout.toNanos());
+        // A read that asked the stalled store would wait for the timeout: fifty of them would take fifty timeouts.
+        // The bound is a fifth of that, far from both "immediate" and "waited", so a pause of the JVM does not decide.
+        assertThat(System.nanoTime() - started).isLessThan(timeout.toNanos() * 10);
         assertThat(store.calls()).isEqualTo(callsWhenOpened);
 
         // Half-open: exactly one probe reaches the store, however many readers arrive

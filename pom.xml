@@ -24,6 +24,8 @@
         <!-- Fixed lines for the modules that are bound to one generation of Spring Boot -->
         <kurin.boot3.version>3.2.12</kurin.boot3.version>
         <kurin.boot4.version>4.1.1</kurin.boot4.version>
+        <!-- Heap of a test JVM in the profile stability -->
+        <kurin.test.heap>512m</kurin.test.heap>
         <kryo.version>5.6.2</kryo.version>
         <rocksdb.version>8.8.1</rocksdb.version>
     </properties>
@@ -158,6 +160,24 @@
             <properties>
                 <spring-boot.version>${kurin.boot4.version}</spring-boot.version>
             </properties>
+        </profile>
+        <!-- For repeated test runs (scripts/stability.sh): one test JVM per module with a bounded heap, so that
+             many runs in a row do not depend on how much memory the machine happens to have free -->
+        <profile>
+            <id>stability</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <forkCount>1</forkCount>
+                            <reuseForks>true</reuseForks>
+                            <argLine>-Xmx${kurin.test.heap} -XX:+UseSerialGC</argLine>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 

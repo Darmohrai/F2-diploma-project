@@ -454,7 +454,7 @@ Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review o
 | B | Spring Boot 3.2+ and 4.x compatibility, Actuator adapters, integration test modules (section 2) | done |
 | C | Database access outside of a shard, migrations per shard, `db` health, Hibernate (section 1) | done |
 | D | Routing section of `/actuator/kurin`, fan-out observation, `diff` performance (section 5) | done |
-| E | Stability runs, release 1.1.1 (sections 6 and 7) | pending |
+| E | Stability runs, release 1.1.1 (sections 6 and 7) | done |
 
 ## 1.1.1, phase A
 
@@ -555,9 +555,9 @@ Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review o
 
 | Build | Starters compiled and tested on | Result |
 |---|---|---|
-| `./mvnw clean install` | 3.2.12 | green, 169 tests |
-| `./mvnw -Pboot4 clean install` | 4.1.1 | green (155 tests before the integration modules had tests; repeated at the end of phase E) |
-| `./mvnw -Dspring-boot.version=3.5.16 -Dkurin.boot3.version=3.5.16 clean install` | 3.5.16 | green, 169 tests |
+| `./mvnw clean install` | 3.2.12 | green; 183 tests at the end of phase E |
+| `./mvnw -Pboot4 clean install` | 4.1.1 | green; 183 tests at the end of phase E |
+| `./mvnw -Dspring-boot.version=3.5.16 -Dkurin.boot3.version=3.5.16 clean install` | 3.5.16 | green, 169 tests (at the end of phase B) |
 
 In the default build the starter jars compiled against 3.2.12 run on 4.1.1 in `kurin-actuator-boot4` and
 `kurin-it-boot4`; with `-Pboot4` the jars compiled against 4.1.1 run on 3.2.12 in `kurin-actuator-boot3` and
@@ -664,3 +664,65 @@ lines that pass, and the API Kurin uses did not change inside the 3.x line.
   Two observations with the same name and different tag sets would produce meters that clash.
 - **The first measured `diff` is the second call.** The first one pays for class loading and compilation, which
   is not what the limit is about.
+
+## 1.1.1, phase E
+
+### Stability (section 6)
+
+- `scripts/stability.sh` and `scripts/stability.ps1` (`<modules> <runs> [maven options]`) run `surefire:test` of
+  the given modules N times with `-o -q -Pstability`, stop at the first failing run and copy its surefire
+  reports and Maven log to `stability-failures/<time>-run<N>/`. The profile `stability` gives one test JVM per
+  module (`forkCount=1`, `reuseForks=true`) with `-Xmx512m` (`kurin.test.heap`) and the serial collector.
+- **Every module passed 20 runs in a row** with that profile on the machine the work was done on (Windows 10,
+  JDK 23), starters on Spring Boot 3.2.12:
+
+  | Modules | Runs |
+  |---|---|
+  | `core`, `kurin-tiered-cache`, `kurin-data-routing` | 20 / 20 |
+  | `kurin-test` | 20 / 20 |
+  | `kurin-spring-boot-starter` | 20 / 20 |
+  | `kurin-locks` | 20 / 20 |
+  | `kurin-locks-spring-boot-starter` | 20 / 20 |
+  | `kurin-cache-spring-boot-starter` | 20 / 20 after the fix below; before it, 16 passed and the 17th failed |
+  | `kurin-data-routing-spring-boot-starter` | 20 / 20 |
+  | `kurin-actuator-boot3` | 20 / 20 |
+  | `kurin-actuator-boot4` | 20 / 20 |
+  | `kurin-it-boot3` | 20 / 20 |
+  | `kurin-it-boot4` | 20 / 20 |
+
+  The modules whose 20 runs take longer than ten minutes were run as two series of 10 directly after each other,
+  because of a limit on the length of a single command in the environment; nothing was changed in between.
+  This closes the open point of 1.1.0, where the series for phases 7 and 8 was cut short by lack of memory: the
+  bounded heap and the single reused test JVM are what made the runs fit.
+- **One failure was found and its cause removed.** In run 17 of the cache starter two tests of `ExternalTierTest`
+  failed together. Both assumed that the JVM does not pause for a few hundred milliseconds:
+  - `ttlAndNullTtlReachTheExternalStore` cached a null with a time to live of 300 ms and then waited until the
+    store held it together with another entry. When the first look came later than 300 ms, the null had already
+    expired, the condition could never become true, and the wait ran into its timeout. The null now lives 3 s.
+  - `hangingStoreNeverDelaysReadsBeyondTheTimeoutAndOpensTheCircuit` required 50 reads with an open circuit to
+    take less than 100 ms in total; in that run they took 230 ms. What the test is about is that the stalled
+    store is not asked, in which case every read would wait 100 ms and fifty would take 5 s. The bound is now
+    1 s, and the count of calls into the store, which was already asserted, stays the exact check.
+  The production code was not at fault and was not changed. Timeouts were not raised blindly: in both cases the
+  assertion was changed so that the outcome no longer depends on the length of a pause.
+- The series was not repeated with `-Pboot4`. On Spring Boot 4 every module passes the full build, which is one
+  run; the tests are the same ones.
+
+### Release (section 7)
+
+- All modules are `1.1.1`.
+- `CHANGELOG.md` with 1.1.0 and 1.1.1.
+- `README.md`: section "Getting it through JitPack" with the coordinates
+  `com.github.Darmohrai.F2-diploma-project:<module>:<tag>`, the list of modules and the Actuator adapter per
+  Spring Boot generation; compatibility table; build commands.
+- `CLAUDE.md` updated: the rule of neutral API, the adapter and integration modules, storage failure, sharded
+  startup, the profile `boot4` and the stability scripts.
+- No tag was created or pushed; that is left to the owner of the repository.
+
+### Decisions and deviations
+
+- **The JitPack coordinates are the ones the spec gives.** The `origin` remote of the working copy is
+  `github.com/Darmohrai/KurinFrame`, for which JitPack would use `com.github.Darmohrai.KurinFrame`. If the
+  release is tagged in that repository, the group id in the README has to be changed accordingly.
+- **`kurin-it-boot3` and `kurin-it-boot4` are built by JitPack but not published**: `maven.install.skip` keeps
+  them out of the local repository JitPack collects artifacts from.
