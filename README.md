@@ -257,15 +257,21 @@ cannot be discovered from handler signatures.
 | `health.recovery-threshold` | int | `2` | Good checks before a node is used again. |
 | `health.primary-required` | boolean | `false` | Report `OUT_OF_SERVICE` when a primary is down. |
 | `fan-out.parallelism` | int | `8` | Shards worked on at once by `executeOnAllShards`. |
+| `unrouted.mode` | `STARTUP_ONLY` | `FAIL` | `DEFAULT_SHARD` | `STARTUP_ONLY` | With several shards, what database access without a selected shard gets: the primary of the unrouted shard while the application starts and an error afterwards; always an error; or always the unrouted shard. |
+| `unrouted.shard` | String | first shard | The shard that serves access without a selected shard. |
+| `migrations.enabled` | boolean | `true` | With several shards, run Liquibase or Flyway on the primary of every shard. |
+| `migrations.shards` | List | all | Shards to migrate, in this order. |
 
 ## Observability
 
 With Micrometer on the classpath and a `MeterRegistry` bean, the starters publish `kurin.raft.*`, `kurin.locks.*`,
 `kurin.jobs.*`, `kurin.cache.*` and `kurin.routing.*` meters (listed in the module READMEs). With an
 `ObservationRegistry` they report observations `kurin.command`, `kurin.query`, `kurin.command.forward`,
-`kurin.raft.apply`, `kurin.lock.acquire`, `kurin.cache.get`, `kurin.cache.load`; with a tracing bridge these become
+`kurin.raft.apply`, `kurin.lock.acquire`, `kurin.cache.get`, `kurin.cache.load`, `kurin.routing.fanout`; with a tracing bridge these become
 spans, and the trace of a caller continues on the leader when a follower forwards its request. With Actuator there
-are the health indicators `kurin`, `kurinCache`, `kurinRouting` and the endpoint `/actuator/kurin`. Log lines written
+is the endpoint `/actuator/kurin`, and, with the adapter for your Spring Boot generation (`kurin-actuator-boot3` or
+`kurin-actuator-boot4`), the health indicators `kurin`, `kurinCache`, `kurinRouting` and a `db` health of the
+physical database pools. Log lines written
 by the Raft thread carry the MDC keys `kurin.node`, `kurin.term`, `kurin.role`.
 
 ## Building

@@ -1,29 +1,29 @@
 package org.kurin.it;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.kurin.routing.KurinPrimary;
 import org.kurin.routing.KurinReadOnly;
 import org.kurin.routing.KurinShardKey;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
-
 /**
- * Accounts live in the shard their id hashes to.
+ * Accounts live in the shard their id hashes to. The table is created on every shard by the Liquibase change
+ * log of the application.
  */
 @Service
 public class Accounts {
-    private final JdbcTemplate jdbc;
-
-    public Accounts(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
-    }
+    @PersistenceContext
+    private EntityManager entities;
 
     @Transactional
     public void save(@KurinShardKey String id, String name) {
-        if (jdbc.update("update accounts set name = ? where id = ?", name, id) == 0) {
-            jdbc.update("insert into accounts (id, name) values (?, ?)", id, name);
+        Account account = entities.find(Account.class, id);
+        if (account == null) {
+            entities.persist(new Account(id, name));
+        } else {
+            account.setName(name);
         }
     }
 
@@ -49,7 +49,7 @@ public class Accounts {
     }
 
     private String read(String id) {
-        List<String> names = jdbc.queryForList("select name from accounts where id = ?", String.class, id);
-        return names.isEmpty() ? null : names.get(0);
+        Account account = entities.find(Account.class, id);
+        return account != null ? account.getName() : null;
     }
 }

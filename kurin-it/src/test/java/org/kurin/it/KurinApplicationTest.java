@@ -39,7 +39,6 @@ import static org.awaitility.Awaitility.await;
 class KurinApplicationTest {
     private static final Duration SOON = Duration.ofSeconds(20);
     private static final String TOKEN_HEADER = "X-Kurin-Consistency";
-    private static final List<String> DATABASE_NODES = List.of("eu-primary", "eu-replica", "us-primary", "us-replica");
 
     @TempDir
     static Path directory;
@@ -51,8 +50,10 @@ class KurinApplicationTest {
     @BeforeAll
     static void startThreeInstances() {
         Shared.reset();
-        for (String node : DATABASE_NODES) {
-            database(node).execute("create table accounts (id varchar(64) primary key, name varchar(128) not null)");
+        // The primaries get their schema from the Liquibase change log of the application, on every shard.
+        // Replicas would get it by replication; there is none here, so it is put there by hand.
+        for (String replica : List.of("eu-replica", "us-replica")) {
+            database(replica).execute("create table accounts (id varchar(64) primary key, name varchar(128) not null)");
         }
         List<Integer> ports = TestPorts.freePorts(3);
         String peers = ports.stream().map(port -> "127.0.0.1:" + port).collect(Collectors.joining(","));

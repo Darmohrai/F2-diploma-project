@@ -231,7 +231,9 @@ class RoutingIntegrationTest {
                 .withBean(KurinDataSourceTopology.class, () -> topology)
                 .withUserConfiguration(App.class)
                 // The tests drive the health checks themselves
-                .withPropertyValues("kurin.routing.health.interval=1h", "kurin.routing.health.recovery-threshold=2",
+                // A context made by this runner is never declared ready, so the mode that depends on it is not used here
+                .withPropertyValues("kurin.routing.unrouted.mode=fail",
+                        "kurin.routing.health.interval=1h", "kurin.routing.health.recovery-threshold=2",
                         "kurin.routing.token-secret=test-secret", "kurin.routing.sticky-window=400ms");
     }
 

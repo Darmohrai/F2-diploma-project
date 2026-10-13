@@ -66,17 +66,41 @@ public class KurinRoutingDataSource extends AbstractDataSource {
     private final KurinRoutingProperties.ReplicaFallback replicaFallback;
     private final boolean readonlyTransactionsToReplica;
     private final String singleShard;
+    private final KurinRoutingProperties.UnroutedMode unroutedMode;
+    private final String unroutedShard;
+    private final java.util.function.BooleanSupplier startupFinished;
+    private final java.util.concurrent.atomic.AtomicBoolean startupAccessExplained = new java.util.concurrent.atomic.AtomicBoolean();
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
     public KurinRoutingDataSource(KurinDataSourceTopology topology, ConsistencyTokenStrategy strategy,
                                   DataSourceHealthMonitor health, KurinRoutingProperties.ReplicaFallback replicaFallback,
                                   boolean readonlyTransactionsToReplica) {
+        this(topology, strategy, health, replicaFallback, readonlyTransactionsToReplica,
+                KurinRoutingProperties.UnroutedMode.FAIL, null, () -> true);
+    }
+
+    /**
+     * @param unroutedMode    what to do with access that selected no shard, when there are several
+     * @param unroutedShard   the shard that serves such access where the mode allows it; null means the first
+     * @param startupFinished tells whether the application is ready; consulted in the mode STARTUP_ONLY
+     */
+    public KurinRoutingDataSource(KurinDataSourceTopology topology, ConsistencyTokenStrategy strategy,
+                                  DataSourceHealthMonitor health, KurinRoutingProperties.ReplicaFallback replicaFallback,
+                                  boolean readonlyTransactionsToReplica, KurinRoutingProperties.UnroutedMode unroutedMode,
+                                  String unroutedShard, java.util.function.BooleanSupplier startupFinished) {
         this.topology = topology;
         this.strategy = strategy;
         this.health = health;
         this.replicaFallback = replicaFallback;
         this.readonlyTransactionsToReplica = readonlyTransactionsToReplica;
         this.singleShard = topology.isSharded() ? null : topology.shards().keySet().iterator().next();
+        this.unroutedMode = unroutedMode;
+        this.unroutedShard = unroutedShard != null ? unroutedShard : topology.shards().keySet().iterator().next();
+        this.startupFinished = startupFinished;
+        if (!topology.shards().containsKey(this.unroutedShard)) {
+            throw new IllegalStateException("kurin.routing.unrouted.shard=" + this.unroutedShard
+                    + " is not a shard of the topology " + topology.shards().keySet());
+        }
     }
 
     public void addListener(Listener listener) {
@@ -101,7 +125,8 @@ public class KurinRoutingDataSource extends AbstractDataSource {
      * @throws KurinPrimaryUnavailableException if the primary is needed and down
      */
     public Route route() {
-        String shard = resolveShard();
+        boolean selected = KurinRoutingContext.shard() != null || singleShard != null;
+        String shard = selected ? resolveShard() : unroutedShard();
         ShardTransactionGuard.enter(shard);
         Map<String, KurinDataSourceTopology.Shard> shards = topology.shards();
         DataSource replica = shards.get(shard).replica();
@@ -111,7 +136,10 @@ public class KurinRoutingDataSource extends AbstractDataSource {
         DataSourceType requested = KurinRoutingContext.requestedType();
 
         DataSourceType role;
-        if (requested == DataSourceType.PRIMARY) {
+        if (!selected && unroutedMode == KurinRoutingProperties.UnroutedMode.STARTUP_ONLY) {
+            // Whatever runs before the application can choose a shard gets the one node that has everything
+            role = DataSourceType.PRIMARY;
+        } else if (requested == DataSourceType.PRIMARY) {
             role = DataSourceType.PRIMARY;
         } else if (transactionActive && !transactionReadOnly) {
             role = DataSourceType.PRIMARY;
@@ -142,14 +170,40 @@ public class KurinRoutingDataSource extends AbstractDataSource {
         return new Route(shard, role);
     }
 
+    private static final String HOW_TO_SELECT = "Mark the shard key argument of the method with @KurinShardKey, use "
+            + "@KurinSharded, or run it through KurinShardOperations.";
+
+    // The shard for access that selected none, in a topology with several
+    private String unroutedShard() {
+        switch (unroutedMode) {
+            case DEFAULT_SHARD -> {
+                log.debug("No shard is selected: using shard '{}' (kurin.routing.unrouted.mode=default-shard)", unroutedShard);
+                return unroutedShard;
+            }
+            case STARTUP_ONLY -> {
+                if (startupFinished.getAsBoolean()) {
+                    throw new KurinRoutingException("No shard is selected for the current operation. " + HOW_TO_SELECT
+                            + " Access without a shard was served by shard '" + unroutedShard + "' only while the application "
+                            + "was starting (kurin.routing.unrouted.mode=startup-only).");
+                }
+                if (startupAccessExplained.compareAndSet(false, true)) {
+                    log.info("Database access without a selected shard is served by the primary of shard '{}' while the "
+                            + "application starts: schema validation, driver metadata and the like run before any code can "
+                            + "choose a shard. Once the application is ready such access fails "
+                            + "(kurin.routing.unrouted.mode=startup-only).", unroutedShard);
+                } else {
+                    log.debug("No shard is selected during startup: using the primary of shard '{}'", unroutedShard);
+                }
+                return unroutedShard;
+            }
+            default -> throw new KurinRoutingException("No shard is selected for the current operation. " + HOW_TO_SELECT);
+        }
+    }
+
     private String resolveShard() {
         String shard = KurinRoutingContext.shard();
         if (shard == null) {
             shard = singleShard;
-        }
-        if (shard == null) {
-            throw new KurinRoutingException("No shard is selected for the current operation. Mark the shard key argument "
-                    + "of the method with @KurinShardKey, use @KurinSharded, or run it through KurinShardOperations.");
         }
         if (!topology.shards().containsKey(shard)) {
             throw new KurinRoutingException("Unknown shard '" + shard + "'. Configured shards: " + topology.shards().keySet());

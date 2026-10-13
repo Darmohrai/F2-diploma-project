@@ -99,6 +99,7 @@ primitive return type, missing cache names or keys, unparsable SpEL and duration
 | `kurin.cache.stampede.waits` | counter | `cache`, `mode` |
 | `kurin.cache.l3.circuit.state` | gauge: 0 closed, 1 half-open, 2 open | `cache` |
 
-Observations `kurin.cache.get` and `kurin.cache.load`. Health `kurinCache` is always `UP` and reports
-`degraded: true` while an external store circuit is not closed. `/actuator/kurin` gets a `caches` section. With
+Observations `kurin.cache.get` and `kurin.cache.load`. Health `kurinCache`, with an
+[Actuator adapter](../kurin-actuator-boot3/README.md), is always `UP` and reports `degraded: true` while an external
+store circuit is not closed. `/actuator/kurin` gets a `caches` section. With
 `kurin.cache.web.trace-header.enabled=true` each HTTP response lists its cache lookups in `X-Kurin-Cache`.

@@ -143,10 +143,32 @@ public class KurinRoutingAutoConfiguration {
                 + "For PostgreSQL streaming replication set kurin.routing.postgres-probe.enabled=true.");
     }
 
+    /**
+     * Present only where Hibernate is configured by Spring Boot; it adds nothing otherwise.
+     */
+    @Bean
+    public static KurinRoutingHibernateSupport kurinRoutingHibernateSupport() {
+        return new KurinRoutingHibernateSupport();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public KurinRoutingStartup kurinRoutingStartup() {
+        return new KurinRoutingStartup();
+    }
+
     @Bean
     public KurinRoutingDataSource kurinRoutingDataSource(KurinDataSourceTopology topology, ConsistencyTokenStrategy strategy,
-                                                         DataSourceHealthMonitor health, KurinRoutingProperties props) {
-        return new KurinRoutingDataSource(topology, strategy, health, props.getReplicaFallback(), props.isReadonlyTransactionsToReplica());
+                                                         DataSourceHealthMonitor health, KurinRoutingProperties props,
+                                                         KurinRoutingStartup startup) {
+        KurinRoutingProperties.Unrouted unrouted = props.getUnrouted();
+        if (topology.isSharded() && unrouted.getMode() == KurinRoutingProperties.UnroutedMode.DEFAULT_SHARD) {
+            String shard = unrouted.getShard() != null ? unrouted.getShard() : topology.shards().keySet().iterator().next();
+            log.warn("kurin.routing.unrouted.mode=default-shard: database access that selects no shard goes to shard '{}'. "
+                    + "A forgotten shard key is no longer detected.", shard);
+        }
+        return new KurinRoutingDataSource(topology, strategy, health, props.getReplicaFallback(), props.isReadonlyTransactionsToReplica(),
+                unrouted.getMode(), unrouted.getShard(), startup::isFinished);
     }
 
     /**

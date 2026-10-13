@@ -3,7 +3,9 @@ package org.kurin.routing.spring;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @ConfigurationProperties(prefix = "kurin.routing")
@@ -72,6 +74,8 @@ public class KurinRoutingProperties {
     private final Health health = new Health();
     private final FanOut fanOut = new FanOut();
     private final PostgresProbe postgresProbe = new PostgresProbe();
+    private final Unrouted unrouted = new Unrouted();
+    private final Migrations migrations = new Migrations();
 
     public boolean isReadonlyTransactionsToReplica() { return readonlyTransactionsToReplica; }
     public void setReadonlyTransactionsToReplica(boolean readonlyTransactionsToReplica) { this.readonlyTransactionsToReplica = readonlyTransactionsToReplica; }
@@ -104,6 +108,10 @@ public class KurinRoutingProperties {
     public FanOut getFanOut() { return fanOut; }
 
     public PostgresProbe getPostgresProbe() { return postgresProbe; }
+
+    public Unrouted getUnrouted() { return unrouted; }
+
+    public Migrations getMigrations() { return migrations; }
 
     public static class ShardProperties {
         /**
@@ -178,6 +186,64 @@ public class KurinRoutingProperties {
 
         public int getParallelism() { return parallelism; }
         public void setParallelism(int parallelism) { this.parallelism = parallelism; }
+    }
+
+    /**
+     * What happens to database access that selected no shard, in a topology with more than one shard.
+     */
+    public enum UnroutedMode {
+        /**
+         * Always an error.
+         */
+        FAIL,
+        /**
+         * While the application starts, such access goes to the primary of the unrouted shard, so that what
+         * runs before any code of the application can choose a shard (schema validation, driver metadata)
+         * works. Once the application is ready it is an error.
+         */
+        STARTUP_ONLY,
+        /**
+         * Such access always uses the unrouted shard. For applications that keep their global tables on one
+         * shard. A forgotten shard key is then no longer detected.
+         */
+        DEFAULT_SHARD
+    }
+
+    public static class Unrouted {
+        /**
+         * What happens to database access that selected no shard when there are several: fail, startup-only
+         * (the default) or default-shard.
+         */
+        private UnroutedMode mode = UnroutedMode.STARTUP_ONLY;
+        /**
+         * The shard that serves access without a selected shard, where the mode allows it. Defaults to the
+         * first shard of the topology.
+         */
+        private String shard;
+
+        public UnroutedMode getMode() { return mode; }
+        public void setMode(UnroutedMode mode) { this.mode = mode; }
+
+        public String getShard() { return shard; }
+        public void setShard(String shard) { this.shard = shard; }
+    }
+
+    public static class Migrations {
+        /**
+         * With several shards, run the Liquibase or Flyway migrations of the application on the primary of
+         * every shard instead of once on the routing data source.
+         */
+        private boolean enabled = true;
+        /**
+         * Shards to migrate, in this order. Empty means all shards in the order of the topology.
+         */
+        private List<String> shards = new ArrayList<>();
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public List<String> getShards() { return shards; }
+        public void setShards(List<String> shards) { this.shards = shards; }
     }
 
     public static class PostgresProbe {

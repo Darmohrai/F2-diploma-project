@@ -75,8 +75,9 @@ public void save(@KurinShardKey Order order) { ... }      // Order has a field a
 public void place(PlaceOrder request) { ... }
 ```
 
-- In a sharded topology, a connection requested with no shard selected fails with `KurinRoutingException`; there
-  is no default shard.
+- In a sharded topology, a connection requested with no shard selected fails with `KurinRoutingException` once
+  the application is ready; what happens before, and how to name a default shard, is described
+  [below](#database-access-before-a-shard-can-be-chosen).
 - A transaction is pinned to the first shard it touches; a second shard raises
   `KurinCrossShardTransactionException`. There are no cross-shard transactions.
 - Placement is weighted consistent hashing; replace it with a `ShardResolver` bean.
@@ -93,13 +94,83 @@ counts.failures().forEach((shard, error) -> log.warn("Shard {} failed", shard, e
 
 Each shard's callback runs in its own thread and its own transaction scope.
 
+## Database access before a shard can be chosen
+
+With several shards, a connection requested with no shard selected has nowhere to go. But a good deal of what
+happens at startup asks for one before any code of the application runs: Hibernate reads the JDBC metadata,
+schema validation looks at the tables, a migration tool creates them, health checks probe every `DataSource`.
+`kurin.routing.unrouted.mode` says what such access gets:
+
+| Mode | During startup | After the application is ready |
+|---|---|---|
+| `startup-only` (default) | the **primary** of the unrouted shard | `KurinRoutingException` |
+| `fail` | `KurinRoutingException` | `KurinRoutingException` |
+| `default-shard` | the unrouted shard, primary or replica by the usual rules | the same |
+
+- The unrouted shard is `kurin.routing.unrouted.shard`, by default the first shard of the topology.
+- "Ready" is the `ApplicationReadyEvent` of the application's own context: after the context is refreshed and
+  the application runners have run. The state is kept per application context. A context that is not started by
+  `SpringApplication` never becomes ready by itself; call `KurinRoutingStartup.finish()` there.
+- The first unrouted access during startup is logged at INFO with an explanation, the following ones at DEBUG.
+- `default-shard` is for applications that keep global tables on one shard. It logs a warning at startup: a
+  forgotten shard key is no longer detected, the statement just runs on that shard.
+- With a single shard none of this applies; there is nothing to choose.
+
+### Migrations on every shard
+
+With several shards and Liquibase or Flyway on the classpath, the migrations Spring Boot configures from
+`spring.liquibase.*` or `spring.flyway.*` run on the **primary of every shard**, one shard after another in the
+order of the topology, instead of once. Replicas are not touched; they get the schema by replication. A failure
+on a shard fails the start and names the shard.
+
+The migration bean of the application is used as it is: for each shard it is pointed at the primary and run, so
+every setting applies to every shard. A migration bean with a data source of its own (`spring.liquibase.url`,
+`@LiquibaseDataSource`, `spring.flyway.url`) is left alone.
+
+| Property | Default | Meaning |
+|---|---|---|
+| `kurin.routing.migrations.enabled` | `true` | `false` leaves the migration to Spring Boot, which then reaches the unrouted shard only. |
+| `kurin.routing.migrations.shards` | all | Shards to migrate, in this order. |
+
+With Flyway only `migrate()` is spread over the shards. For `info`, `validate`, `repair` or `clean` take the
+`Flyway` bean, which is a `KurinShardedFlyway`, and call `forShard(name)`.
+
+### Hibernate
+
+In the default mode nothing is changed: Hibernate reads its metadata from the primary of the unrouted shard, and
+`spring.jpa.hibernate.ddl-auto=validate` validates against it.
+
+In the mode `fail` with several shards Hibernate cannot open that connection. Unless the application set
+`hibernate.boot.allow_jdbc_metadata_access` (or `hibernate.temp.use_jdbc_metadata_defaults`) itself, the
+starter switches the metadata access off, and the dialect has to be named with `spring.jpa.database-platform`.
+If it is not, the start fails with a message that says so.
+
+### Maintenance code
+
+Code of the application that works on the databases outside of a request (data migrations, clean-up, reports)
+runs through `KurinShardOperations`. Inside the callback the shard is selected, so `JdbcTemplate`, JPA and
+transactions work as usual:
+
+```java
+// one shard
+shardOperations.executeOnShard("eu", shard -> transactionTemplate.execute(status ->
+        jdbc.update("delete from sessions where expires_at < ?", cutoff)));
+
+// every shard, each callback in its own transaction on its own shard
+ShardResults<Integer> deleted = shardOperations.executeOnAllShards(shard -> transactionTemplate.execute(status ->
+        jdbc.update("delete from sessions where expires_at < ?", cutoff)));
+```
+
 ## Events, health, metrics
 
 `KurinPrimaryDownEvent`, `KurinPrimaryUpEvent`, `KurinReplicaDownEvent`, `KurinReplicaUpEvent` are published on
 transitions.
 
-Health `kurinRouting`: `UP` with `degraded: true` while any node is down; `OUT_OF_SERVICE` only when a primary is
-down and `kurin.routing.health.primary-required=true`.
+Health, with [kurin-actuator-boot3](../kurin-actuator-boot3/README.md) or
+[kurin-actuator-boot4](../kurin-actuator-boot4/README.md): `kurinRouting` is `UP` with `degraded: true` while any node
+is down, and `OUT_OF_SERVICE` only when a primary is down and `kurin.routing.health.primary-required=true`; `db`
+lists the physical pools instead of the routing data source. The bean `KurinRoutingDiagnostics` gives the same
+facts to code.
 
 | Meter | Type | Tags |
 |---|---|---|

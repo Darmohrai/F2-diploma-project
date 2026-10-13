@@ -88,7 +88,8 @@ to the leader, so the leader's spans join the caller's trace.
 
 Actuator:
 
-- health `kurin`: `UP` with a known leader; `UNKNOWN` while there is none; `OUT_OF_SERVICE` once that lasts longer
+- health `kurin`, with [kurin-actuator-boot3](../kurin-actuator-boot3/README.md) or
+  [kurin-actuator-boot4](../kurin-actuator-boot4/README.md): `UP` with a known leader; `UNKNOWN` while there is none; `OUT_OF_SERVICE` once that lasts longer
   than `kurin.node.health.no-leader-threshold`; `DOWN` while the node cannot write its durable state (detail
   `storageFailure`). Details: role, term, leader, commit and applied index, peers with the
   time since last contact.

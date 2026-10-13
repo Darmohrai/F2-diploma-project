@@ -452,7 +452,7 @@ Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review o
 |-------|-------|--------|
 | A | Services without snapshots (section 4), disk failure (section 3) | done |
 | B | Spring Boot 3.2+ and 4.x compatibility, Actuator adapters, integration test modules (section 2) | done |
-| C | Database access outside of a shard, migrations per shard, `db` health, Hibernate (section 1) | pending |
+| C | Database access outside of a shard, migrations per shard, `db` health, Hibernate (section 1) | done |
 | D | Routing section of `/actuator/kurin`, fan-out observation, `diff` performance (section 5) | pending |
 | E | Stability runs, release 1.1.1 (sections 6 and 7) | pending |
 
@@ -583,3 +583,59 @@ lines that pass, and the API Kurin uses did not change inside the 3.x line.
   Spring Boot 4 Jackson 3, in different packages and with a different field order; a JSON library in the shared
   test sources would tie them to one generation.
 - **JPA and Liquibase in the integration application come with phase C**, which makes them work on two shards.
+
+## 1.1.1, phase C
+
+### Done
+
+- **`kurin.routing.unrouted.mode`** with `FAIL`, `STARTUP_ONLY` (default) and `DEFAULT_SHARD`, and
+  `kurin.routing.unrouted.shard` (default: the first shard). In `STARTUP_ONLY` access without a shard goes to the
+  primary of that shard until the context gets its own `ApplicationReadyEvent`, then fails; the first such access
+  is logged at INFO, the rest at DEBUG. The state is the bean `KurinRoutingStartup`, a `SmartApplicationListener`
+  that compares the context of the event with its own, so applications in one JVM do not affect each other.
+  `DEFAULT_SHARD` logs a warning at startup. A shard name that is not in the topology fails the start. Nothing
+  changes for a topology with one shard.
+- **Migrations on every shard** (`KurinShardedMigrationsAutoConfiguration`): with several shards the
+  `SpringLiquibase` or `Flyway` bean that was configured for the routing data source is replaced, before it runs,
+  by `KurinShardedLiquibase` / `KurinShardedFlyway`, which runs the same configuration on the primary of each
+  shard in the order of the topology. A failure names the shard and fails the start. Replicas are not touched.
+  `kurin.routing.migrations.enabled` (default true) and `kurin.routing.migrations.shards`.
+- **`db` health**: the composite of physical pools in the adapter modules (done in phase B).
+- **Hibernate** (`KurinRoutingHibernateSupport`): with several shards and the mode `FAIL`, unless the application
+  set the property itself, JDBC metadata access is switched off; without a named dialect the start fails with a
+  message that names `spring.jpa.database-platform` and the mode `startup-only`.
+- **Maintenance code**: `KurinShardOperations.executeOnShard` / `executeOnAllShards` are tested with
+  `TransactionTemplate` and `JdbcTemplate` (commit, rollback, one transaction per shard) and documented as the
+  way for data migrations and upkeep.
+- **Tests**: `ShardedApplicationTest` (12 tests) starts a real `SpringApplication` with JPA and Liquibase or
+  Flyway on two shards of H2 databases: start, schema on both primaries and on no replica, JPA per shard, access
+  without a shard refused after start, state per application, `DEFAULT_SHARD`, unknown unrouted shard, `FAIL`
+  without and with a dialect, Flyway, a subset of shards, migrations switched off, a single shard left alone, a
+  failing shard named. The integration application (`kurin-it`) now uses JPA and gets its schema from Liquibase
+  on both shards, on Spring Boot 3 and 4.
+
+### Decisions and deviations
+
+- **The migration bean of Spring Boot is not made to back off; its instance is replaced.** The spec proposes a
+  separate `SpringLiquibase` per shard built from `spring.liquibase.*`, with the bean of Spring Boot yielding
+  (`@ConditionalOnMissingBean(SpringLiquibase.class)` was confirmed in 3.2.12 and 4.1.1). That needs a decision
+  at bean definition time, when it is not yet known whether the topology, a bean of the application, has several
+  shards; and it needs the mapping of `spring.liquibase.*` to be repeated here, for two generations of Spring
+  Boot whose properties classes live in different packages and differ in detail. Instead a bean post-processor
+  takes the `SpringLiquibase` Spring Boot built, before it is initialized, and returns one that runs the very
+  same object once per primary. Every property and customizer applies unchanged, a single shard is not touched at
+  all, and no class of Spring Boot is referenced. The same is done for `Flyway`.
+- **Flyway: only `migrate()` is spread over the shards.** The other operations keep addressing the routing data
+  source; `KurinShardedFlyway.forShard(name)` gives a Flyway for one shard.
+- **Hibernate is configured through a proxy of `HibernatePropertiesCustomizer`**, because the interface is in
+  different packages in Spring Boot 3 and 4. Both the property of Hibernate 6.5+ and the older one are set:
+  Spring Boot 3.2 ships Hibernate 6.4, which knows only `hibernate.temp.use_jdbc_metadata_defaults` (read from
+  the jars).
+- **The health assertions of test 6 in the spec are in the adapter modules and in `kurin-it`**, not in the
+  routing starter: the adapters depend on the routing starter, so the starter cannot use them in its tests.
+  "Replica stopped: UP and degraded" is `KurinActuatorAdapterTest`; "`/actuator/health` UP with JPA, Liquibase and
+  two shards" is `KurinApplicationTest`.
+- **Testcontainers is not used.** Everything runs on H2, one database per node; Docker is not available on the
+  machine the work was done on, and a test that is skipped proves nothing.
+- **A context that is not started by `SpringApplication` never becomes ready.** `ApplicationContextRunner` and
+  hand-made contexts publish no `ApplicationReadyEvent`; `KurinRoutingStartup.finish()` is there for them.

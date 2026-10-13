@@ -349,3 +349,20 @@ Kurin 1.1.1 runs on Spring Boot 3.2 - 3.5 and on Spring Boot 4.x with the same j
 - The starters no longer bring `spring-boot-starter-aop` (it does not exist under that name in Spring Boot 4) but
   `spring-aop` and `aspectjweaver`. An application that relied on the starter being there transitively, for
   aspects of its own, should declare it.
+
+## Data routing with several shards
+
+- **Access without a shard is allowed while the application starts.** Until now it failed at any time, which made
+  an application with JPA, Liquibase or Flyway and more than one shard fail to start. The new default,
+  `kurin.routing.unrouted.mode=startup-only`, sends such access to the primary of the first shard (or
+  `kurin.routing.unrouted.shard`) until the application is ready, and fails afterwards as before. For the old
+  behaviour set `kurin.routing.unrouted.mode=fail`.
+- **Liquibase and Flyway migrations run on the primary of every shard.** If the application already migrated its
+  shards by other means and wants to keep doing so, set `kurin.routing.migrations.enabled=false`. Change sets
+  that were applied by hand without Liquibase or Flyway knowing will now be attempted; mark them as run first.
+- `KurinRoutingDataSource` has a second constructor with the unrouted mode, the unrouted shard and a supplier
+  telling whether the application is ready. The old constructor is kept and behaves like the mode `fail`.
+- New beans: `KurinRoutingStartup`, `KurinRoutingDiagnostics`.
+- Tests that build a context with `ApplicationContextRunner` never get an `ApplicationReadyEvent`: such a context
+  stays in its startup phase. Set `kurin.routing.unrouted.mode=fail`, or call `KurinRoutingStartup.finish()`, where
+  a test relies on access without a shard being refused.
