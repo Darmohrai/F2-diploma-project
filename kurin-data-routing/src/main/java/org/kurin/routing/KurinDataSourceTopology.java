@@ -1,4 +1,4 @@
-package org.kurin.routing.spring;
+package org.kurin.routing;
 
 import javax.sql.DataSource;
 import java.util.Collections;
@@ -6,14 +6,17 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Describes the physical databases behind {@link KurinRoutingDataSource}: one or more shards,
- * each with a Primary pool and an optional Replica pool. Declaring a bean of this type
- * enables Kurin database routing.
+ * Describes the physical databases behind the routing data source: one or more shards, each with a primary
+ * pool and an optional replica pool. Declaring a bean of this type enables Kurin data routing.
  */
 public class KurinDataSourceTopology {
     public static final String DEFAULT_SHARD = "default";
 
-    public record Shard(DataSource primary, DataSource replica) {
+    /**
+     * @param replica may be null: reads of the shard then go to its primary
+     * @param weight  relative share of the keys this shard should own; 1 for equal shards
+     */
+    public record Shard(DataSource primary, DataSource replica, int weight) {
     }
 
     private final Map<String, Shard> shards;
@@ -23,7 +26,7 @@ public class KurinDataSourceTopology {
     }
 
     /**
-     * Topology without sharding: a single Primary/Replica pair.
+     * Topology without sharding: a single primary/replica pair.
      */
     public static KurinDataSourceTopology of(DataSource primary, DataSource replica) {
         return builder().shard(DEFAULT_SHARD, primary, replica).build();
@@ -37,17 +40,31 @@ public class KurinDataSourceTopology {
         return shards;
     }
 
+    public boolean isSharded() {
+        return shards.size() > 1;
+    }
+
     public static class Builder {
         private final Map<String, Shard> shards = new LinkedHashMap<>();
 
-        /**
-         * @param replica may be null, then reads of this shard go to its primary
-         */
         public Builder shard(String name, DataSource primary, DataSource replica) {
+            return shard(name, primary, replica, 1);
+        }
+
+        /**
+         * @param weight relative share of the keys; a shard of weight 2 owns about twice as many as one of weight 1
+         */
+        public Builder shard(String name, DataSource primary, DataSource replica, int weight) {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("A shard needs a name");
+            }
             if (primary == null) {
                 throw new IllegalArgumentException("Primary DataSource is required for shard: " + name);
             }
-            if (shards.putIfAbsent(name, new Shard(primary, replica)) != null) {
+            if (weight <= 0) {
+                throw new IllegalArgumentException("Weight of shard " + name + " must be positive");
+            }
+            if (shards.putIfAbsent(name, new Shard(primary, replica, weight)) != null) {
                 throw new IllegalArgumentException("Duplicate shard: " + name);
             }
             return this;

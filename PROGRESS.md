@@ -11,7 +11,7 @@ Work follows `KURIN_1.1_CLAUDE_CODE_PROMPT.md` phase by phase. Each phase ends w
 | 4 | Spring integration of the core | done |
 | 5 | Locks, leadership tasks, exactly-once jobs | done |
 | 6 | Cache | done |
-| 7 | Data routing | pending |
+| 7 | Data routing | done |
 | 8 | Observability, documentation | pending |
 
 ## Baseline
@@ -310,3 +310,48 @@ options, read/write routing, shard router). Phase 1 builds on it.
 - **The default stampede mode is `LOCAL`.** It costs nothing and removes the most common stampede; `NONE` and
   `CLUSTER` are opt-in.
 - **`cacheNulls` on a primitive return type and `@KurinCacheable` on a void method fail the startup.**
+- **Stability.** 20 consecutive green runs of the cache suites (36 tests).
+
+## Phase 7
+
+### Done
+
+- **Read/write split (8.1).** `@KurinReadOnly(consistency = EVENTUAL | READ_YOUR_WRITES)` and `@KurinPrimary`, on
+  methods or classes. Inside an active read-write transaction every connection goes to the primary, also under
+  `@KurinReadOnly`. `kurin.routing.readonly-transactions-to-replica` lets `@Transactional(readOnly = true)` use a
+  replica. The "this client wrote" mark is set in `afterCommit` of a writing transaction.
+- **Read-your-writes across instances (8.2).** `ConsistencyTokenStrategy` SPI with `TimestampTokenStrategy`
+  (default), `ReplicaPositionTokenStrategy` on a `ReplicaPositionProbe` (cached, with a built-in
+  `PostgresReplicaPositionProbe`) and `LocalSessionStrategy`. The token is stateless, HMAC-signed with
+  `kurin.routing.token-secret`, and carried by `ConsistencyTokenCarrier`; the servlet filter uses the
+  `X-Kurin-Consistency` header and optionally an `HttpOnly`, `SameSite=Lax` cookie. A token that fails verification
+  is ignored with a warning. `KurinConsistency.withToken` serves non-web callers.
+- **Node health (8.3).** `DataSourceHealthMonitor`: periodic `Connection.isValid`, immediate DOWN on a failed
+  connection attempt, UP after N good checks. A dead replica sends reads to the primary (`replica-fallback`), a
+  dead primary fails writes and strict reads with `KurinPrimaryUnavailableException` while eventual reads continue.
+  `KurinReplicaDownEvent`, `KurinPrimaryDownEvent` and their `Up` counterparts.
+- **Sharding (8.4).** `@KurinShardKey` on a parameter or field, `@KurinSharded(key = SpEL)`. `ShardResolver` SPI with
+  the weighted `ConsistentHashShardResolver` (`kurin.routing.shards.<name>.weight`). `ConsistentHashRing.diff`
+  returns a `RingDiff` with the moved ranges, `moves(key)` and the moved fraction. `KurinShardOperations` with
+  `executeOnAllShards` (bounded pool, per-task context, `readOnly`, `timeout`, `FAIL_FAST | COLLECT`),
+  `executeOnShard`, `executeForKey`. A second shard inside a transaction raises
+  `KurinCrossShardTransactionException`.
+- **Tests.** Spec tests 28 and 30 in `kurin-data-routing` (`ShardingTest`); 25, 26, 27, 29 in the starter
+  (`RoutingIntegrationTest`), against H2 databases, one per node, each wrapped so that it can be switched off.
+
+### Decisions and deviations
+
+- **The application sees a `LazyConnectionDataSourceProxy` around the routing data source.** Spring publishes
+  whether a transaction is read-only only after it has asked for the connection. Without the lazy proxy the router
+  would have to decide before it can know, which is the very bug 8.1 describes.
+- **`ConsistencyTokenStrategy.onWriteCommitted(shard, primary)` takes the primary `DataSource`**, which the spec
+  signature omits. The position strategy has to query the primary there.
+- **A write outside of a transaction is not noted in the token.** In auto-commit mode the router cannot tell a
+  write from a read. Such access goes to the primary (there is no `@KurinReadOnly`), but read-your-writes is
+  guaranteed only for writes made in transactions.
+- **Without `kurin.routing.token-secret` tokens are unsigned**, with a warning at startup. A client can then only
+  change where its own reads go.
+- **Tests use H2 in-memory databases without replication.** Each node is a separate database with a marker row, so
+  a query shows which node answered and a write shows where it landed. Docker is not assumed.
+- **The routing starter does not depend on the Kurin node.** Routing needs no cluster; an application can use it
+  alone.

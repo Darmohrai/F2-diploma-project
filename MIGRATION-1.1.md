@@ -221,4 +221,23 @@ The cache was rewritten. Data in 1.0.x disk tiers is not read; delete the old ca
 - New: `KurinCacheInvalidator`, `KurinCacheObserver`, `KurinCacheTrace`, `KurinCacheValueCodec`, `KeyGenerator`,
   `CacheClusterLock`.
 
-The section for the routing API is added when that phase lands.
+## Data routing
+
+(Package moves are listed at the top of this document. The changes below are relative to the routing code that
+existed before 1.1, which was never part of a release.)
+
+- The `DataSource` to inject is now the `@Primary` bean `kurinDataSource`, a lazy proxy around
+  `KurinRoutingDataSource`. Code that injected `KurinRoutingDataSource` to run queries should inject `DataSource`.
+- `KurinDataSourceTopology`, `ConsistentHashRing` and `KurinShardRouter` moved to `org.kurin.routing` and
+  `org.kurin.routing.shard`. `KurinShardRouter` is built from the shard names and a `ShardResolver`.
+- `KurinRoutingContext.set/get/clear` are replaced by scopes: `try (var s = KurinRoutingContext.readOnly(...))`,
+  `primary()`, `shard(name)`.
+- `@KurinReadOnly` gained `consistency` (default `READ_YOUR_WRITES`). A write transaction inside a
+  `@KurinReadOnly` method now goes to the primary instead of the replica.
+- A connection requested without `@KurinReadOnly` no longer marks the client as a writer. The mark is set when a
+  read-write transaction commits.
+- `SessionStickyManager` is gone. Its behaviour is `kurin.routing.consistency-strategy=local-session`; the default
+  is `timestamp`, which works across instances through the `X-Kurin-Consistency` token.
+- `kurin.routing.sticky-window-ms` becomes `kurin.routing.sticky-window` (a duration).
+- New: `@KurinPrimary`, `@KurinSharded`, `KurinShardOperations`, `ShardResolver`, `RingDiff`, node health with
+  `KurinPrimaryUnavailableException` and the node state events, `KurinCrossShardTransactionException`.
