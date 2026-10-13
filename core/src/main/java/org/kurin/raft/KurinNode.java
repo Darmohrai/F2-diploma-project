@@ -1,6 +1,11 @@
 package org.kurin.raft;
 
 import org.kurin.api.CommandOptions;
+import org.kurin.api.KurinInstrumentation;
+import org.kurin.api.KurinObserver;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.BiFunction;
 import org.kurin.api.LeadershipToken;
 import org.kurin.api.ReadConsistency;
 import org.kurin.api.exception.KurinNotLeaderException;
@@ -58,6 +63,8 @@ public class KurinNode {
     private final List<PojoStateMachine.Service> services;
     private final List<StateMachineListener> listeners;
     private final List<RoleChangeListener> roleListeners;
+    private final List<KurinObserver> observers;
+    private volatile KurinInstrumentation instrumentation;
     private final RaftStatus initialStatus;
 
     private volatile Lifecycle lifecycle = Lifecycle.NEW;
@@ -75,6 +82,8 @@ public class KurinNode {
         this.services = new ArrayList<>(builder.services);
         this.listeners = new ArrayList<>(builder.listeners);
         this.roleListeners = new ArrayList<>(builder.roleListeners);
+        this.observers = new ArrayList<>(builder.observers);
+        this.instrumentation = builder.instrumentation;
         this.initialStatus = new RaftStatus(RaftRole.FOLLOWER, 0, null, 0, 0, 0, 0, localAddress.asString());
     }
 
@@ -123,6 +132,24 @@ public class KurinNode {
         return this;
     }
 
+    /**
+     * Registers a receiver of the measurements of this node.
+     */
+    public synchronized KurinNode addObserver(KurinObserver observer) {
+        ensureNotStarted("add an observer");
+        observers.add(observer);
+        return this;
+    }
+
+    /**
+     * Connects the node to a tracing system.
+     */
+    public synchronized KurinNode instrumentation(KurinInstrumentation instrumentation) {
+        ensureNotStarted("set the instrumentation");
+        this.instrumentation = instrumentation;
+        return this;
+    }
+
     public KurinTypeRegistry typeRegistry() {
         return typeRegistry;
     }
@@ -154,7 +181,7 @@ public class KurinNode {
         listeners.forEach(stateMachine::addListener);
 
         RaftNode node = new RaftNode(localAddress, peers, stateMachine, raftConfig, networkConfig, nodeSerializer,
-                roleListeners, transportDecorator);
+                roleListeners, transportDecorator, observers, instrumentation);
         try {
             node.start();
         } catch (RuntimeException e) {
@@ -210,10 +237,10 @@ public class KurinNode {
         }
         String requestId = options.requestId() != null ? options.requestId() : UUID.randomUUID().toString();
         Duration timeout = options.timeout() != null ? options.timeout() : Duration.ofMillis(raftConfig.getCommandTimeoutMs());
-        ClientCommandRequest request = new ClientCommandRequest(requestId, command);
-
-        return submit(timeout, "Command " + command.getClass().getSimpleName() + " (request " + requestId + ")",
-                state -> state.getCurrentRole().handleClientCommand(state, request, true));
+        String type = command.getClass().getSimpleName();
+        return submit(timeout, "kurin.command", type, "Command " + type + " (request " + requestId + ")",
+                (state, headers) -> state.getCurrentRole().handleClientCommand(state,
+                        new ClientCommandRequest(requestId, command, headers), true));
     }
 
     /**
@@ -230,14 +257,16 @@ public class KurinNode {
         if (query == null || consistency == null) {
             throw new IllegalArgumentException("query and consistency must not be null");
         }
-        ClientQueryRequest request = new ClientQueryRequest(UUID.randomUUID().toString(), query, consistency);
-        return submit(Duration.ofMillis(raftConfig.getCommandTimeoutMs()), "Query " + query.getClass().getSimpleName(),
-                state -> state.getCurrentRole().handleClientQuery(state, request, true));
+        String requestId = UUID.randomUUID().toString();
+        String type = query.getClass().getSimpleName();
+        return submit(Duration.ofMillis(raftConfig.getCommandTimeoutMs()), "kurin.query", type, "Query " + type,
+                (state, headers) -> state.getCurrentRole().handleClientQuery(state,
+                        new ClientQueryRequest(requestId, query, consistency, headers), true));
     }
 
     @SuppressWarnings("unchecked")
-    private <T> CompletableFuture<T> submit(Duration timeout, String description,
-                                            Function<RaftState, CompletableFuture<Object>> operation) {
+    private <T> CompletableFuture<T> submit(Duration timeout, String spanName, String type, String description,
+                                            BiFunction<RaftState, HashMap<String, String>, CompletableFuture<Object>> request) {
         CompletableFuture<Object> result = new CompletableFuture<>();
         RaftNode node = internalNode;
         if (lifecycle != Lifecycle.STARTED || node == null) {
@@ -251,7 +280,15 @@ public class KurinNode {
                 timeout.toMillis(), TimeUnit.MILLISECONDS);
         result.whenComplete((value, error) -> timeoutTask.cancel());
 
-        attempt(node.getRaftState(), operation, result, true);
+        // Started on the calling thread, so that it continues the trace of the caller
+        RaftState submittedTo = node.getRaftState();
+        KurinInstrumentation.Span span = submittedTo.startSpan(spanName, Map.of("type", type), null);
+        Map<String, String> spanHeaders = span.headers();
+        HashMap<String, String> headers = spanHeaders == null || spanHeaders.isEmpty() ? null : new HashMap<>(spanHeaders);
+        result.whenComplete((value, error) -> submittedTo.endSpan(span, error));
+        Function<RaftState, CompletableFuture<Object>> operation = state -> request.apply(state, headers);
+
+        attempt(submittedTo, operation, result, true);
         return (CompletableFuture<T>) result;
     }
 
@@ -315,6 +352,46 @@ public class KurinNode {
         return Optional.empty();
     }
 
+    /**
+     * Starts a span in the tracing system of the node, for modules built on top of it.
+     *
+     * @return a span that must be ended; a no-op one if no tracing is connected or the node is not started
+     */
+    public KurinInstrumentation.Span startSpan(String name, Map<String, String> tags) {
+        RaftState state = raftState;
+        return state != null ? state.startSpan(name, tags, null) : KurinInstrumentation.Span.NOOP;
+    }
+
+    /**
+     * @return number of entries currently held in the Raft log (those not yet replaced by a snapshot)
+     */
+    public long logEntries() {
+        RaftState state = raftState;
+        return state != null ? state.logEntries() : 0;
+    }
+
+    /**
+     * @return for how long this node has known no leader; zero while it knows one or is not started
+     */
+    public Duration leaderUnknownFor() {
+        RaftState state = raftState;
+        return state != null && lifecycle == Lifecycle.STARTED ? Duration.ofNanos(state.leaderUnknownForNanos()) : Duration.ZERO;
+    }
+
+    /**
+     * @return how long ago this node last heard from each peer it is in contact with in its current role:
+     * on a leader its followers, on a follower its leader
+     */
+    public Map<String, Duration> peerContactAges() {
+        RaftState state = raftState;
+        Map<String, Duration> ages = new java.util.TreeMap<>();
+        if (state != null) {
+            long now = System.nanoTime();
+            state.peerContactNanos().forEach((peer, contact) -> ages.put(peer, Duration.ofNanos(Math.max(0, now - contact))));
+        }
+        return ages;
+    }
+
     public String nodeId() {
         return localAddress.asString();
     }
@@ -362,6 +439,18 @@ public class KurinNode {
         private final List<StateMachineListener> listeners = new ArrayList<>();
         private final List<RoleChangeListener> roleListeners = new ArrayList<>();
         private UnaryOperator<KurinTransport> transportDecorator = UnaryOperator.identity();
+        private final List<KurinObserver> observers = new ArrayList<>();
+        private KurinInstrumentation instrumentation = KurinInstrumentation.NOOP;
+
+        public Builder addObserver(KurinObserver observer) {
+            this.observers.add(observer);
+            return this;
+        }
+
+        public Builder instrumentation(KurinInstrumentation instrumentation) {
+            this.instrumentation = instrumentation;
+            return this;
+        }
 
         /**
          * @param advertisedHost the host other nodes use to reach this node; together with the port it forms the node id

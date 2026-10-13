@@ -1,1 +1,2 @@
 org.kurin.routing.spring.KurinRoutingAutoConfiguration
+org.kurin.routing.spring.KurinRoutingObservabilityAutoConfiguration

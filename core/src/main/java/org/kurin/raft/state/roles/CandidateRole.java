@@ -21,6 +21,7 @@ public class CandidateRole implements NodeRole {
     private static final Logger log = LoggerFactory.getLogger(CandidateRole.class);
 
     private int votesReceived;
+    private boolean won;
 
     @Override
     public RaftRole role() {
@@ -30,6 +31,7 @@ public class CandidateRole implements NodeRole {
     @Override
     public void onEnter(RaftState context) {
         context.beginElectionTerm();
+        context.observe(observer -> observer.onElection("started"));
         votesReceived = 1; // own vote
 
         long electionTerm = context.getCurrentTerm();
@@ -37,6 +39,8 @@ public class CandidateRole implements NodeRole {
                 context.getLocalAddress().asString(), electionTerm, context.quorumSize());
 
         if (votesReceived >= context.quorumSize()) {
+            won = true;
+            context.observe(observer -> observer.onElection("won"));
             context.transitionTo(new LeaderRole());
             return;
         }
@@ -68,6 +72,9 @@ public class CandidateRole implements NodeRole {
     @Override
     public void onExit(RaftState context) {
         context.cancelElectionTimer();
+        if (!won) {
+            context.observe(observer -> observer.onElection("lost"));
+        }
     }
 
     @Override
@@ -92,6 +99,8 @@ public class CandidateRole implements NodeRole {
         if (response.voteGranted()) {
             votesReceived++;
             if (votesReceived >= context.quorumSize()) {
+                won = true;
+            context.observe(observer -> observer.onElection("won"));
                 context.transitionTo(new LeaderRole());
             }
         }

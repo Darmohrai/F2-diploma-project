@@ -72,14 +72,25 @@ public class CacheReader implements AutoCloseable {
      * @throws Exception whatever the loader throws; failures of the cache itself never surface here
      */
     public Object read(TieredCache cache, String key, ReadOptions options, Callable<Object> loader) throws Exception {
+        return read(cache, key, options, loader, result -> {
+        });
+    }
+
+    /**
+     * @param onLookup told how the cache answered before a possible load: a hit in some tier, a stale value or a miss
+     */
+    public Object read(TieredCache cache, String key, ReadOptions options, Callable<Object> loader,
+                       java.util.function.Consumer<CacheResult> onLookup) throws Exception {
         long now = System.currentTimeMillis();
         CacheLookup lookup = cache.get(key);
 
         if (lookup.isHit() && lookup.entry().isFresh(now)) {
             observers.onLookup(cache.name(), key, CacheResult.hit(lookup.tier()));
+            onLookup.accept(CacheResult.hit(lookup.tier()));
             return lookup.entry().value();
         }
         if (lookup.isHit() && lookup.entry().isStale(now)) {
+            onLookup.accept(CacheResult.STALE);
             // Serve what we have and let one caller refresh it; a failed refresh leaves the stale value in place
             observers.onLookup(cache.name(), key, CacheResult.STALE);
             refreshInBackground(cache, key, options, loader);
@@ -87,6 +98,7 @@ public class CacheReader implements AutoCloseable {
         }
 
         observers.onLookup(cache.name(), key, CacheResult.MISS);
+        onLookup.accept(CacheResult.MISS);
         return switch (effectiveMode(options.stampede())) {
             case NONE -> loadAndStore(cache, key, options, loader, false);
             case LOCAL -> singleFlight(cache, key, StampedeMode.LOCAL, () -> loadAndStore(cache, key, options, loader, false));

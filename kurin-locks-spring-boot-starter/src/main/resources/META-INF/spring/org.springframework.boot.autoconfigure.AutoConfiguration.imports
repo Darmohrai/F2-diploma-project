@@ -1,1 +1,2 @@
 org.kurin.kurinlocksspringbootstarter.KurinLocksAutoConfiguration
+org.kurin.kurinlocksspringbootstarter.KurinLocksObservabilityAutoConfiguration

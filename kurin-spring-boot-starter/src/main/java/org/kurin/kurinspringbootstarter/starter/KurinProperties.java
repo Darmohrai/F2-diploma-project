@@ -89,6 +89,7 @@ public class KurinProperties {
      */
     private Duration idleTimeout = Duration.ofSeconds(30);
     private final Tls tls = new Tls();
+    private final Health health = new Health();
 
     public String getClusterName() { return clusterName; }
     public void setClusterName(String clusterName) { this.clusterName = clusterName; }
@@ -148,6 +149,18 @@ public class KurinProperties {
     public void setIdleTimeout(Duration idleTimeout) { this.idleTimeout = idleTimeout; }
 
     public Tls getTls() { return tls; }
+
+    public Health getHealth() { return health; }
+
+    public static class Health {
+        /**
+         * Time without a known leader after which the health of this instance is OUT_OF_SERVICE.
+         */
+        private Duration noLeaderThreshold = Duration.ofSeconds(10);
+
+        public Duration getNoLeaderThreshold() { return noLeaderThreshold; }
+        public void setNoLeaderThreshold(Duration noLeaderThreshold) { this.noLeaderThreshold = noLeaderThreshold; }
+    }
 
     public static class Tls {
         /**

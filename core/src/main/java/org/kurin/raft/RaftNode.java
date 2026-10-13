@@ -49,7 +49,8 @@ public class RaftNode {
 
     public RaftNode(NodeAddress localAddress, Set<NodeAddress> peers, StateMachine stateMachine,
                     RaftConfig raftConfig, NetworkConfig networkConfig, KryoSerializer serializer,
-                    List<RoleChangeListener> roleListeners, UnaryOperator<KurinTransport> transportDecorator) {
+                    List<RoleChangeListener> roleListeners, UnaryOperator<KurinTransport> transportDecorator,
+                    List<org.kurin.api.KurinObserver> observers, org.kurin.api.KurinInstrumentation instrumentation) {
         AtomicReference<Thread> raftThread = new AtomicReference<>();
         CountDownLatch threadStarted = new CountDownLatch(1);
         LinkedBlockingQueue<Runnable> raftQueue = new LinkedBlockingQueue<>();
@@ -82,7 +83,17 @@ public class RaftNode {
 
         RaftDispatcher dispatcher = new RaftDispatcher(raftState);
         this.networkStarter = new NetworkStarter(localAddress, dispatcher, networkConfig, serializer);
-        this.raftState.setTransport(transportDecorator.apply(networkStarter.getClient()));
+        this.raftState.setObservability(observers, instrumentation);
+        KurinTransport transport = transportDecorator.apply(networkStarter.getClient());
+        // Every request to a peer is timed, whatever sends it
+        this.raftState.setTransport((destination, payload, timeout) -> {
+            long startedNanos = System.nanoTime();
+            String type = payload.getClass().getSimpleName();
+            return transport.sendRequest(destination, payload, timeout).whenComplete((response, error) -> {
+                long latencyNanos = System.nanoTime() - startedNanos;
+                raftState.observe(observer -> observer.onRpc(type, destination.asString(), latencyNanos, error == null));
+            });
+        });
         this.raftState.setTimer(networkStarter.getTimer());
     }
 

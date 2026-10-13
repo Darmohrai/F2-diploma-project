@@ -140,7 +140,16 @@ public class KurinLockManager implements AutoCloseable {
         }
 
         long startedNanos = System.nanoTime();
-        Optional<ManagedLock> acquired = acquireWithWait(key, options, startedNanos);
+        // The key is not a tag: it is unbounded, and tags must stay few
+        org.kurin.api.KurinInstrumentation.Span span = node.startSpan("kurin.lock.acquire", Map.of());
+        Optional<ManagedLock> acquired;
+        try {
+            acquired = acquireWithWait(key, options, startedNanos);
+        } catch (RuntimeException e) {
+            span.end(e);
+            throw e;
+        }
+        span.end(null);
         Duration waited = Duration.ofNanos(System.nanoTime() - startedNanos);
         listeners.forEach(listener -> listener.onAcquire(key, acquired.isPresent(), waited));
         if (acquired.isEmpty()) {

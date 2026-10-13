@@ -241,3 +241,33 @@ existed before 1.1, which was never part of a release.)
 - `kurin.routing.sticky-window-ms` becomes `kurin.routing.sticky-window` (a duration).
 - New: `@KurinPrimary`, `@KurinSharded`, `KurinShardOperations`, `ShardResolver`, `RingDiff`, node health with
   `KurinPrimaryUnavailableException` and the node state events, `KurinCrossShardTransactionException`.
+
+## Observability
+
+Nothing here breaks existing code unless it implements or constructs the types below.
+
+- `ClientCommandRequest` and `ClientQueryRequest` gained a `headers` component (trace context forwarded to the
+  leader). Code that constructs these records directly passes an empty map; all nodes of a cluster must run the
+  same version, as for every wire change in 1.1.
+- New in `core`: `KurinObserver` (callbacks for elections, commits, applies, RPCs, snapshots) and
+  `KurinInstrumentation` (spans). Register them with `KurinNode.Builder.addObserver(...)` and
+  `instrumentation(...)`. Both are called on the Raft thread and must not block.
+- New on `KurinNode`: `startSpan`, `logEntries`, `leaderUnknownFor`, `peerContactAges`.
+- `KurinCacheAspect` has a new constructor `(support, reader, invalidator, node)`. Applications that declared
+  the aspect themselves instead of using the auto-configuration pass the node.
+- With `micrometer-core` on the classpath and a `MeterRegistry` bean, the starters now register meters named
+  `kurin.raft.*`, `kurin.locks.*`, `kurin.jobs.*`, `kurin.cache.*`, `kurin.routing.*`. With an
+  `ObservationRegistry` bean they report observations (`kurin.command`, `kurin.query`, `kurin.command.forward`,
+  `kurin.raft.apply`, `kurin.lock.acquire`, `kurin.cache.get`, `kurin.cache.load`).
+- With `spring-boot-actuator` on the classpath there are new health contributors `kurin`, `kurinCache`,
+  `kurinRouting`, and an endpoint `kurin`. An application whose readiness probe includes all health contributors
+  will now report `OUT_OF_SERVICE` when the node has had no leader for longer than
+  `kurin.node.health.no-leader-threshold` (default 10 s). To keep the old behaviour, exclude the contributor
+  from the probe group, or declare your own bean named `kurinHealthIndicator`, which replaces the built-in one.
+- Log lines written on the Raft thread carry the MDC keys `kurin.node`, `kurin.term`, `kurin.role`.
+
+## Documentation
+
+`README.md` in the root and in every module now states what is and is not guaranteed. Two claims of the 1.0
+documentation were wrong and are removed: serialization is not zero-copy (messages are encoded by Kryo into
+buffers and copied), and election timeouts are randomized, not deterministic.

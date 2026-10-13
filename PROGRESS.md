@@ -12,7 +12,7 @@ Work follows `KURIN_1.1_CLAUDE_CODE_PROMPT.md` phase by phase. Each phase ends w
 | 5 | Locks, leadership tasks, exactly-once jobs | done |
 | 6 | Cache | done |
 | 7 | Data routing | done |
-| 8 | Observability, documentation | pending |
+| 8 | Observability, documentation | done |
 
 ## Baseline
 
@@ -355,3 +355,88 @@ options, read/write routing, shard router). Phase 1 builds on it.
   a query shows which node answered and a write shows where it landed. Docker is not assumed.
 - **The routing starter does not depend on the Kurin node.** Routing needs no cluster; an application can use it
   alone.
+
+## Phase 8
+
+### Done
+
+**Observability (spec section 9)**
+
+- `core` got two dependency-free hooks. `KurinObserver`: elections, leader changes, commit latency, apply
+  duration per command type, RPC latency per type and peer, append batch sizes, snapshots. `KurinInstrumentation`:
+  spans with tags and propagation headers. Both are invoked on the Raft thread; a failing observer is logged and
+  does not affect the node.
+- Trace context crosses nodes: `ClientCommandRequest` and `ClientQueryRequest` carry a `headers` map. A follower
+  that forwards a request opens `kurin.command.forward` and sends its headers; the leader continues that trace in
+  `kurin.command` / `kurin.query`, and `kurin.raft.apply` on the leader is a child of the command that produced
+  the entry (headers are remembered per log index until the entry is applied).
+- MDC keys `kurin.node`, `kurin.term`, `kurin.role` are set on the Raft thread whenever the status changes, so
+  they are present in every log line of that thread, including those of command handlers.
+- `kurin-spring-boot-starter`: `KurinRaftMetrics` (a `KurinObserver` plus gauges for role, term, commit index,
+  applied index and number of log entries), `ObservationInstrumentation` (spans as Micrometer observations with
+  `SenderContext` / `ReceiverContext`, so any tracing bridge propagates through them), `KurinHealthIndicator`,
+  `KurinEndpoint` (`/actuator/kurin`) with `KurinEndpointContributor` for sections of other starters. All of it is
+  in `KurinObservabilityAutoConfiguration`, conditional on the classes and beans being present.
+- Locks starter: counters and timers for lock acquisition and job claims and runs, a gauge of held locks,
+  observation `kurin.lock.acquire`, a `coordination` section of the endpoint.
+- Cache starter: `KurinCacheObserver` bean feeding meters for lookups per tier and result, loads, evictions,
+  stampede waits and the state of the external store circuit; observations `kurin.cache.get` and
+  `kurin.cache.load`; health `kurinCache`; a `caches` section of the endpoint.
+- Routing starter: counters of connections per shard and role and of fallbacks, gauges of node state and of
+  replica lag (with a `ReplicaPositionProbe`), a timer of fan-out calls, health `kurinRouting`.
+- Test: `KurinObservabilityTest` checks meters, observations with their tags, MDC during apply, health in both
+  states and the endpoint with a contributed section.
+
+**Documentation (spec section 11)**
+
+- `README.md` in the root: what Kurin is, what is replicated and what is local, guarantees and non-guarantees of
+  commands, reads, time, leadership, locks, jobs, cache and routing, and the full configuration reference with
+  types and defaults.
+- `README.md` in each of the nine modules: usage with examples for every annotation, guarantees and limits of
+  that module, extension points, meters.
+- `CLAUDE.md` rewritten for the 1.1 architecture and threading model.
+- `MIGRATION-1.1.md` completed with the observability changes.
+- `docs/proposal.md`: "Zero-Copy serialization" replaced by what the code does (binary Kryo encoding with a
+  type registry), "deterministic timeouts" replaced by randomized election timeouts with PreVote and
+  check-quorum. `docs/0_intro.md` uses "deterministic consensus" in the general sense of the problem statement,
+  not as a claim about timeouts, and is left as it is.
+
+### Decisions and deviations
+
+- **Micrometer is not a dependency of `core`.** The spec asks for metrics of the Raft core and forbids
+  non-optional dependencies there, so the core exposes `KurinObserver` / `KurinInstrumentation` and the starter
+  adapts them.
+- **Health has three states.** `UP` with a known leader, `UNKNOWN` without one, `OUT_OF_SERVICE` after
+  `kurin.node.health.no-leader-threshold`. A node that has just started or is in the middle of an election
+  should not be taken out of rotation at once, and reporting `UP` without a leader would be false.
+- **`kurinCache` is never `DOWN`.** The external tier is optional by design; an open circuit is reported as
+  `degraded`.
+- **`kurinRouting` goes `OUT_OF_SERVICE` only with `kurin.routing.health.primary-required=true`.** An
+  application may prefer to keep serving reads from replicas while a primary is down.
+- **No `/actuator/kurin` section for routing.** `KurinEndpointContributor` lives in the Kurin starter, and the
+  routing starter deliberately does not depend on it (phase 7). Routing state is in its health details and
+  meters.
+- **Fan-out has a timer, not an observation.** The routing starter has no `KurinInstrumentation`, which belongs
+  to the node. `kurin.routing.fanout.duration` and `kurin.routing.fanout.failed.shards` cover it.
+- **No separate `kurin.routing.shard.requests`.** `kurin.routing.connections{shard,role}` counts the same events
+  with one more tag.
+- **`kurin.raft.rpc.latency` is tagged with the peer.** Clusters are small and static, so the cardinality is
+  bounded by the peer list.
+- **`kurin.raft.apply.duration` is tagged with the simple class name of the command.** The set of command types
+  is fixed at start by the type registry.
+- **The `management.health.<name>.enabled` properties are not honoured** by the Kurin health contributors; a bean
+  with the same name replaces the built-in one. Using the Boot condition would make `spring-boot-actuator-autoconfigure`
+  a compile dependency of every starter.
+- **Lock and cache spans are reported through the node instrumentation**, so they exist only where a node does.
+  Their tags are low-cardinality on purpose: the cache name, never the key.
+
+### Verification
+
+- `./mvnw clean install` after all phase 8 changes: BUILD SUCCESS, 124 tests in 9 modules, no failures.
+- `grep -rn "TODO\|FIXME\|catch (Exception ignored)" --include=*.java` finds nothing; no `Thread.sleep` in the
+  sources.
+- **The 20-run stability loop was not completed for the suites of phases 7 and 8.** It was started for
+  `kurin-spring-boot-starter` and for the two routing modules and was stopped by the environment (the machine ran
+  low on memory) after 3 and 2 complete green runs. The suites of phases 1 to 6 passed 20 runs in a row when
+  those phases were finished. To finish the check:
+  `for i in $(seq 1 20); do ./mvnw -o -q -pl kurin-spring-boot-starter,kurin-data-routing,kurin-data-routing-spring-boot-starter surefire:test || break; done`

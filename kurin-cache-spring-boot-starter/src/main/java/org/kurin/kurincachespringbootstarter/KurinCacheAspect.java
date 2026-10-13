@@ -5,6 +5,8 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.kurin.api.KurinCommand;
+import org.kurin.api.KurinInstrumentation;
+import org.kurin.raft.KurinNode;
 import org.kurin.kurintieredcache.api.KurinCacheEvict;
 import org.kurin.kurintieredcache.api.KurinCacheInvalidator;
 import org.kurin.kurintieredcache.api.KurinCachePut;
@@ -58,7 +60,10 @@ public class KurinCacheAspect {
     private final KurinCacheInvalidator invalidator;
     private final Map<Method, CacheablePlan> cacheablePlans = new ConcurrentHashMap<>();
 
-    public KurinCacheAspect(CacheAnnotationSupport support, CacheReader reader, KurinCacheInvalidator invalidator) {
+    private final KurinNode node;
+
+    public KurinCacheAspect(CacheAnnotationSupport support, CacheReader reader, KurinCacheInvalidator invalidator, KurinNode node) {
+        this.node = node;
         this.support = support;
         this.reader = reader;
         this.invalidator = invalidator;
@@ -86,10 +91,36 @@ public class KurinCacheAspect {
         ReadOptions options = new ReadOptions(plan.settings(), cacheable.cacheNulls(), cacheable.stampede(), plan.lockWait(),
                 cacheable.onLockTimeout(), unless);
 
+        KurinInstrumentation.Span span = node.startSpan("kurin.cache.get", Map.of("cache", plan.cacheName()));
+        Throwable failure = null;
         try {
-            return reader.read(cache, key, options, () -> proceedWrapping(joinPoint));
+            return reader.read(cache, key, options, () -> {
+                KurinInstrumentation.Span load = node.startSpan("kurin.cache.load", Map.of("cache", plan.cacheName()));
+                try {
+                    Object loaded = proceedWrapping(joinPoint);
+                    load.end(null);
+                    return loaded;
+                } catch (Exception | Error e) {
+                    load.end(e);
+                    throw e;
+                }
+            }, result -> {
+                span.tag("result", result.name());
+                span.tag("tier", switch (result) {
+                    case HIT_L1 -> "L1";
+                    case HIT_L2 -> "L2";
+                    case HIT_L3 -> "L3";
+                    case STALE, MISS -> "none";
+                });
+            });
         } catch (UndeclaredThrowableException e) {
-            throw e.getUndeclaredThrowable();
+            failure = e.getUndeclaredThrowable();
+            throw failure;
+        } catch (Exception | Error e) {
+            failure = e;
+            throw e;
+        } finally {
+            span.end(failure);
         }
     }
 

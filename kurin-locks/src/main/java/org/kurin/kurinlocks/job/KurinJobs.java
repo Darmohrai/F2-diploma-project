@@ -56,6 +56,15 @@ public class KurinJobs {
         this.historySize = historySize;
     }
 
+    private final java.util.Set<String> knownJobs = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * @return names of the jobs this instance has tried to run since it started
+     */
+    public java.util.Set<String> knownJobs() {
+        return java.util.Set.copyOf(knownJobs);
+    }
+
     public void addListener(JobListener listener) {
         listeners.add(listener);
     }
@@ -83,6 +92,7 @@ public class KurinJobs {
 
         Optional<ClaimResult> claim = claim(jobName, slot, ownerId, mode, lease);
         boolean granted = claim.isPresent() && claim.get().granted();
+        knownJobs.add(jobName);
         listeners.forEach(listener -> listener.onClaim(jobName, granted));
         if (!granted) {
             return Optional.empty();

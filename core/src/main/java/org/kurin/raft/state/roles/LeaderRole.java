@@ -78,6 +78,8 @@ public class LeaderRole implements NodeRole, RaftState.LeaseHolder {
 
     private final Map<NodeAddress, Peer> peers = new HashMap<>();
     private final Map<Long, Integer> entrySizes = new HashMap<>();
+    // When this leader appended the entries that are not committed yet, for the commit latency
+    private final Map<Long, Long> appendedAtNanos = new HashMap<>();
     private final List<PendingRead> pendingReads = new ArrayList<>();
     private final List<Runnable> awaitingNoop = new ArrayList<>();
     private int maxAppendBytes;
@@ -220,6 +222,17 @@ public class LeaderRole implements NodeRole, RaftState.LeaseHolder {
         return leaseValid(context);
     }
 
+    @Override
+    public Map<String, Long> peerContactNanos(RaftState context) {
+        Map<String, Long> contacts = new HashMap<>();
+        peers.forEach((address, peer) -> {
+            if (peer.acked) {
+                contacts.put(address.asString(), peer.lastAckSentNanos);
+            }
+        });
+        return contacts;
+    }
+
     // ---------------------------------------------------------------- replication
 
     private void replicateToAll(RaftState context, boolean heartbeat) {
@@ -266,6 +279,10 @@ public class LeaderRole implements NodeRole, RaftState.LeaseHolder {
         long sentNanos = System.nanoTime();
         peer.inflight++;
         peer.sendIndex += batch.size();
+        if (!batch.isEmpty()) {
+            int batchSize = batch.size();
+            context.observe(observer -> observer.onAppendBatch(batchSize));
+        }
 
         context.getTransport().sendRequest(address, request, context.getRpcTimeout()).whenComplete((response, error) ->
                 context.onRaftThread(() -> {
@@ -389,6 +406,15 @@ public class LeaderRole implements NodeRole, RaftState.LeaseHolder {
 
     private void commitTo(RaftState context, long index) {
         boolean noopWasCommitted = noopCommitted(context);
+        long committedNanos = System.nanoTime();
+        appendedAtNanos.entrySet().removeIf(appended -> {
+            if (appended.getKey() > index) {
+                return false;
+            }
+            long latencyNanos = committedNanos - appended.getValue();
+            context.observe(observer -> observer.onCommit(latencyNanos));
+            return true;
+        });
         context.setCommitIndex(index);
         context.applyCommittedEntries();
 
@@ -450,6 +476,8 @@ public class LeaderRole implements NodeRole, RaftState.LeaseHolder {
                     + " takes " + size + " bytes, over the replication limit of " + maxAppendBytes + " bytes"));
         }
         entrySizes.put(newIndex, size);
+        appendedAtNanos.put(newIndex, System.nanoTime());
+        context.rememberTraceHeaders(newIndex, request.headers());
 
         raftLog.append(entry);
         context.trackUncommittedRequest(requestId, newIndex);

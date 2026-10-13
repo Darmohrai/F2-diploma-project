@@ -119,8 +119,9 @@ public class KurinCacheAutoConfiguration {
     }
 
     @Bean
-    public KurinCacheAspect kurinCacheAspect(CacheAnnotationSupport support, CacheReader reader, KurinCacheInvalidator invalidator) {
-        return new KurinCacheAspect(support, reader, invalidator);
+    public KurinCacheAspect kurinCacheAspect(CacheAnnotationSupport support, CacheReader reader, KurinCacheInvalidator invalidator,
+                                             KurinNode kurinNode) {
+        return new KurinCacheAspect(support, reader, invalidator, kurinNode);
     }
 
     @Bean

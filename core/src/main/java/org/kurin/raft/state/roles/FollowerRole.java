@@ -56,6 +56,13 @@ public class FollowerRole implements NodeRole {
         return context.heardFromLeaderRecently();
     }
 
+    @Override
+    public java.util.Map<String, Long> peerContactNanos(RaftState context) {
+        NodeAddress leader = context.getCurrentLeader();
+        Long contact = context.lastLeaderContactNanos();
+        return leader != null && contact != null ? java.util.Map.of(leader.asString(), contact) : java.util.Map.of();
+    }
+
     /**
      * The leader went silent. Before disturbing the cluster with a new term, ask whether a majority would
      * vote for this node at all; only then become a candidate.
@@ -255,15 +262,24 @@ public class FollowerRole implements NodeRole {
         }
 
         log.debug("Forwarding {} to leader {}", request.getClass().getSimpleName(), leader.asString());
+        // The forward is a span of its own inside the trace of the caller
+        java.util.Map<String, String> callerHeaders = request instanceof ClientCommandRequest command ? command.headers()
+                : request instanceof ClientQueryRequest query ? query.headers() : null;
+        org.kurin.api.KurinInstrumentation.Span span = context.startSpan("kurin.command.forward",
+                java.util.Map.of("type", request.getClass().getSimpleName(), "peer", leader.asString()), callerHeaders);
+        Object forwarded = request instanceof ClientCommandRequest command ? command.withHeaders(span.headers())
+                : request instanceof ClientQueryRequest query ? query.withHeaders(span.headers()) : request;
+
         CompletableFuture<Object> result = new CompletableFuture<>();
-        context.getTransport().sendRequest(leader, request, timeout).whenComplete((value, error) -> {
+        result.whenComplete((value, error) -> context.endSpan(span, error));
+        context.getTransport().sendRequest(leader, forwarded, timeout).whenComplete((value, error) -> {
             Throwable cause = error != null ? RpcResult.unwrap(error) : null;
             if (cause instanceof KurinNotLeaderException notLeader
                     && notLeader.leaderHint() != null && !notLeader.leaderHint().equals(leader.asString())) {
                 // The leader changed under us: one retry at the node it pointed to, with the same request id
                 NodeAddress hinted = NodeAddress.parse(notLeader.leaderHint());
                 log.debug("{} is no longer the leader. Retrying at {}", leader.asString(), hinted.asString());
-                context.getTransport().sendRequest(hinted, request, timeout).whenComplete((retryValue, retryError) -> {
+                context.getTransport().sendRequest(hinted, forwarded, timeout).whenComplete((retryValue, retryError) -> {
                     if (retryError != null) {
                         result.completeExceptionally(RpcResult.unwrap(retryError));
                     } else {

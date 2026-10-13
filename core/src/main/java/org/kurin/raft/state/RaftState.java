@@ -3,6 +3,9 @@ package org.kurin.raft.state;
 import io.netty.util.Timeout;
 import io.netty.util.Timer;
 import org.kurin.api.KurinCommandContext;
+import org.kurin.api.KurinInstrumentation;
+import org.kurin.api.KurinObserver;
+import org.slf4j.MDC;
 import org.kurin.api.exception.KurinNotStartedException;
 import org.kurin.network.client.KurinTransport;
 import org.kurin.network.model.NodeAddress;
@@ -175,9 +178,86 @@ public class RaftState {
         RaftStatus fresh = new RaftStatus(role, metadata.getCurrentTerm(),
                 currentLeader != null ? currentLeader.asString() : null,
                 commitIndex, lastApplied, raftLog.getLastLogIndex(), lease, localAddress.asString());
-        if (!fresh.equals(status)) {
+        RaftStatus previous = status;
+        if (!fresh.equals(previous)) {
             status = fresh;
+            if (fresh.role() != previous.role() || fresh.term() != previous.term() || mdcUnset) {
+                // Visible in every log line written from the Raft thread
+                MDC.put("kurin.node", fresh.nodeId());
+                MDC.put("kurin.term", Long.toString(fresh.term()));
+                MDC.put("kurin.role", fresh.role().name());
+                mdcUnset = false;
+            }
+            if (fresh.leaderId() == null && previous.leaderId() != null) {
+                leaderUnknownSinceNanos = System.nanoTime();
+            }
+            if (fresh.leaderId() != null && !fresh.leaderId().equals(previous.leaderId())) {
+                observe(observer -> observer.onLeaderChange(fresh.leaderId()));
+            }
         }
+        logEntries = raftLog.getLastLogIndex() - raftLog.getBaseIndex();
+        if (currentRole != null) {
+            peerContactNanos = currentRole.peerContactNanos(this);
+        }
+    }
+
+    // ---------------------------------------------------------------- observability
+
+    private boolean mdcUnset = true;
+    private volatile long logEntries;
+    private volatile long leaderUnknownSinceNanos = System.nanoTime();
+    private volatile Map<String, Long> peerContactNanos = Map.of();
+    private List<KurinObserver> observers = List.of();
+    private KurinInstrumentation instrumentation = KurinInstrumentation.NOOP;
+    // Trace context of requests waiting in the log on this leader; kept in memory only, never replicated
+    private final Map<Long, Map<String, String>> traceHeaders = new HashMap<>();
+
+    public void setObservability(List<KurinObserver> observers, KurinInstrumentation instrumentation) {
+        this.observers = List.copyOf(observers);
+        this.instrumentation = instrumentation;
+    }
+
+    public void observe(java.util.function.Consumer<KurinObserver> event) {
+        for (KurinObserver observer : observers) {
+            try {
+                event.accept(observer);
+            } catch (RuntimeException e) {
+                log.warn("Observer {} failed", observer.getClass().getName(), e);
+            }
+        }
+    }
+
+    public KurinInstrumentation instrumentation() {
+        return instrumentation;
+    }
+
+    public void rememberTraceHeaders(long logIndex, Map<String, String> headers) {
+        assertOnRaftThread();
+        if (headers != null && !headers.isEmpty()) {
+            traceHeaders.put(logIndex, headers);
+        }
+    }
+
+    /**
+     * @return number of entries currently held in the log; safe to call from any thread
+     */
+    public long logEntries() {
+        return logEntries;
+    }
+
+    /**
+     * @return for how long this node has known no leader, in nanoseconds; 0 while it knows one. Any thread.
+     */
+    public long leaderUnknownForNanos() {
+        return status.leaderId() != null ? 0 : System.nanoTime() - leaderUnknownSinceNanos;
+    }
+
+    /**
+     * @return {@link System#nanoTime()} of the last contact with each peer this node has heard from in its
+     * current role: on a leader its followers, on a follower its leader. Any thread.
+     */
+    public Map<String, Long> peerContactNanos() {
+        return peerContactNanos;
     }
 
     /**
@@ -295,6 +375,14 @@ public class RaftState {
      * @return true if a leader was heard from within the minimum election timeout. While that holds, this node
      * does not vote for anyone else, which is what makes leader leases safe.
      */
+    /**
+     * @return {@link System#nanoTime()} of the last message from the leader, or null if none was received yet
+     */
+    public Long lastLeaderContactNanos() {
+        assertOnRaftThread();
+        return leaderContactKnown ? lastLeaderContactNanos : null;
+    }
+
     public boolean heardFromLeaderRecently() {
         assertOnRaftThread();
         return leaderContactKnown
@@ -396,6 +484,9 @@ public class RaftState {
         // The snapshot is durable before the entries it replaces are dropped
         snapshotStore.save(snapshot);
         raftLog.compact(index, term);
+        traceHeaders.keySet().removeIf(logIndex -> logIndex <= index);
+        long snapshotNanos = System.nanoTime() - startedNanos;
+        observe(observer -> observer.onSnapshot(snapshotNanos, snapshot.data().length));
         log.info("Node {} took a snapshot at index {} ({} bytes of state, {} ms)", localAddress.asString(), index,
                 snapshot.data().length, (System.nanoTime() - startedNanos) / 1_000_000);
     }
@@ -469,20 +560,51 @@ public class RaftState {
 
     // A handler exception is the result of the command: lastApplied advances and every node records the same failure
     private CommandOutcome invokeStateMachine(LogEntry entry) {
+        String type = entry.command().getClass().getSimpleName();
+        long startedNanos = System.nanoTime();
+        // On the leader the span continues the trace of the caller; elsewhere it stands alone
+        KurinInstrumentation.Span span = startSpan("kurin.raft.apply", Map.of("type", type), traceHeaders.remove(entry.index()));
+        Throwable failure = null;
         KurinCommandContext previous = KurinCommandContext.bind(
                 new KurinCommandContext(entry.index(), entry.term(), entry.leaderTimestampMs(), entry.requestId()));
         try {
-            log.debug("Applying entry {} ({})", entry.index(), entry.command().getClass().getSimpleName());
+            log.debug("Applying entry {} ({})", entry.index(), type);
             return CommandOutcome.success(stateMachine.apply(entry.command()));
         } catch (StateMachine.HandlerFailedException e) {
             Throwable cause = e.getCause();
+            failure = cause;
             log.debug("Handler of entry {} failed: {}", entry.index(), cause.toString());
             return CommandOutcome.failure(cause.getClass().getName(), cause.getMessage());
         } catch (RuntimeException e) {
+            failure = e;
             log.warn("Entry {} could not be applied: {}", entry.index(), e.toString());
             return CommandOutcome.failure(e.getClass().getName(), e.getMessage());
         } finally {
             KurinCommandContext.restore(previous);
+            endSpan(span, failure);
+            long durationNanos = System.nanoTime() - startedNanos;
+            observe(observer -> observer.onApply(type, durationNanos));
+        }
+    }
+
+    /**
+     * Starts a span, shielding the caller from a failing tracing system.
+     */
+    public KurinInstrumentation.Span startSpan(String name, Map<String, String> tags, Map<String, String> parentHeaders) {
+        try {
+            KurinInstrumentation.Span span = instrumentation.start(name, tags, parentHeaders);
+            return span != null ? span : KurinInstrumentation.Span.NOOP;
+        } catch (RuntimeException e) {
+            log.debug("Tracing of {} failed to start: {}", name, e.toString());
+            return KurinInstrumentation.Span.NOOP;
+        }
+    }
+
+    public void endSpan(KurinInstrumentation.Span span, Throwable error) {
+        try {
+            span.end(error);
+        } catch (RuntimeException e) {
+            log.debug("Tracing failed to end a span: {}", e.toString());
         }
     }
 

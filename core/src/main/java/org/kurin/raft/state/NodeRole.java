@@ -51,6 +51,13 @@ public interface NodeRole {
     boolean hasLiveLeader(RaftState context);
 
     /**
+     * @return {@link System#nanoTime()} of the last contact with each peer heard from in this role, by node id
+     */
+    default java.util.Map<String, Long> peerContactNanos(RaftState context) {
+        return java.util.Map.of();
+    }
+
+    /**
      * Answers a pre-vote probe. Never changes the state of this node.
      */
     default PreVoteResponse handlePreVote(RaftState context, PreVoteRequest request) {
