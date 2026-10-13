@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.kurin</groupId>
+        <artifactId>kurin-router-parent</artifactId>
+        <version>1.1.1</version>
+    </parent>
+
+    <artifactId>kurin-it-boot4</artifactId>
+    <name>Kurin Integration Tests on Spring Boot 4</name>
+    <description>A minimal application using every Kurin module, run as three instances on Spring Boot 4</description>
+
+    <properties>
+        <!-- Tests only: nothing here is for applications to depend on -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.install.skip>true</maven.install.skip>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${kurin.boot4.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.kurin</groupId>
+            <artifactId>kurin-locks-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.kurin</groupId>
+            <artifactId>kurin-cache-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.kurin</groupId>
+            <artifactId>kurin-data-routing-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.kurin</groupId>
+            <artifactId>kurin-actuator-boot4</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.kurin</groupId>
+            <artifactId>kurin-test</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- The application and its tests are the same sources for both generations of Spring Boot -->
+    <build>
+        <sourceDirectory>${project.basedir}/../kurin-it/src/main/java</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/../kurin-it/src/test/java</testSourceDirectory>
+        <resources>
+            <resource>
+                <directory>${project.basedir}/../kurin-it/src/main/resources</directory>
+            </resource>
+        </resources>
+        <testResources>
+            <testResource>
+                <directory>${project.basedir}/../kurin-it/src/test/resources</directory>
+            </testResource>
+        </testResources>
+    </build>
+</project>

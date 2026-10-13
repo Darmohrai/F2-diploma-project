@@ -15,10 +15,6 @@ import org.kurin.routing.shard.KurinShardOperations;
 import org.kurin.routing.shard.KurinShardRouter;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
-import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
@@ -209,11 +205,29 @@ class RoutingIntegrationTest {
         }
     }
 
+    /**
+     * The autoconfigurations of Spring Boot that the tests rely on moved between Spring Boot 3 and 4. The tests
+     * run on both, so the class is looked up under its old and its new name.
+     *
+     * @param boot3 name below {@code org.springframework.boot.autoconfigure} in Spring Boot 3
+     * @param boot4 name below {@code org.springframework.boot} in Spring Boot 4
+     */
+    static Class<?> boot(String boot3, String boot4) {
+        for (String name : List.of("org.springframework.boot.autoconfigure." + boot3, "org.springframework.boot." + boot4)) {
+            if (org.springframework.util.ClassUtils.isPresent(name, RoutingIntegrationTest.class.getClassLoader())) {
+                return org.springframework.util.ClassUtils.resolveClassName(name, RoutingIntegrationTest.class.getClassLoader());
+            }
+        }
+        throw new IllegalStateException("Neither " + boot3 + " nor " + boot4 + " is on the classpath");
+    }
+
     private ApplicationContextRunner runner(KurinDataSourceTopology topology) {
         return new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(KurinRoutingAutoConfiguration.class, DataSourceAutoConfiguration.class,
-                        DataSourceTransactionManagerAutoConfiguration.class, JdbcTemplateAutoConfiguration.class,
-                        TransactionAutoConfiguration.class, AopAutoConfiguration.class))
+                .withConfiguration(AutoConfigurations.of(KurinRoutingAutoConfiguration.class, AopAutoConfiguration.class,
+                        boot("jdbc.DataSourceAutoConfiguration", "jdbc.autoconfigure.DataSourceAutoConfiguration"),
+                        boot("jdbc.DataSourceTransactionManagerAutoConfiguration", "jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration"),
+                        boot("jdbc.JdbcTemplateAutoConfiguration", "jdbc.autoconfigure.JdbcTemplateAutoConfiguration"),
+                        boot("transaction.TransactionAutoConfiguration", "transaction.autoconfigure.TransactionAutoConfiguration")))
                 .withBean(KurinDataSourceTopology.class, () -> topology)
                 .withUserConfiguration(App.class)
                 // The tests drive the health checks themselves

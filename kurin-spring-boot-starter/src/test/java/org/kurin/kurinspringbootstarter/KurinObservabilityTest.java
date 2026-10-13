@@ -10,15 +10,14 @@ import org.kurin.api.KurinCommand;
 import org.kurin.api.KurinQuery;
 import org.kurin.kurinspringbootstarter.observability.KurinEndpoint;
 import org.kurin.kurinspringbootstarter.observability.KurinEndpointContributor;
-import org.kurin.kurinspringbootstarter.observability.KurinHealthIndicator;
 import org.kurin.kurinspringbootstarter.observability.KurinObservabilityAutoConfiguration;
 import org.kurin.kurinspringbootstarter.starter.KurinAutoConfiguration;
 import org.kurin.kurinspringbootstarter.template.KurinTemplate;
 import org.kurin.raft.KurinNode;
 import org.kurin.test.TestPorts;
 import org.slf4j.MDC;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.Status;
+import org.kurin.raft.KurinNodeHealth;
+import org.kurin.raft.KurinNodeHealth.Status;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -165,9 +164,9 @@ class KurinObservabilityTest {
                             .containsEntry("kurin.term", Long.toString(node.status().term()));
 
                     // Actuator
-                    Health health = context.getBean(KurinHealthIndicator.class).health();
-                    assertThat(health.getStatus()).isEqualTo(Status.UP);
-                    assertThat(health.getDetails()).containsEntry("role", "LEADER").containsEntry("leaderId", node.nodeId());
+                    KurinNodeHealth health = KurinNodeHealth.of(node, Duration.ofSeconds(10));
+                    assertThat(health.status()).isEqualTo(Status.UP);
+                    assertThat(health.details()).containsEntry("role", "LEADER").containsEntry("leaderId", node.nodeId());
 
                     Map<String, Object> endpoint = context.getBean(KurinEndpoint.class).kurin();
                     assertThat(endpoint).containsKeys("node", "extra");
@@ -205,7 +204,7 @@ class KurinObservabilityTest {
                 .run(context -> {
                     KurinNode node = context.getBean(KurinNode.class);
                     KurinTemplate template = context.getBean(KurinTemplate.class);
-                    KurinHealthIndicator indicator = context.getBean(KurinHealthIndicator.class);
+                    java.util.function.Supplier<KurinNodeHealth> indicator = () -> KurinNodeHealth.of(node, Duration.ofSeconds(10));
                     MeterRegistry meters = context.getBean(MeterRegistry.class);
                     await().atMost(Duration.ofSeconds(10)).until(() -> node.leadership().isPresent());
                     assertThat(meters.get("kurin.raft.storage.failed").gauge().value()).isZero();
@@ -215,16 +214,16 @@ class KurinObservabilityTest {
                             .hasCauseInstanceOf(org.kurin.api.exception.KurinStorageException.class);
 
                     await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
-                        Health health = indicator.health();
-                        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-                        assertThat(String.valueOf(health.getDetails().get("storageFailure"))).contains("Injected storage failure");
+                        KurinNodeHealth health = indicator.get();
+                        assertThat(health.status()).isEqualTo(Status.DOWN);
+                        assertThat(String.valueOf(health.details().get("storageFailure"))).contains("Injected storage failure");
                     });
                     assertThat(meters.get("kurin.raft.storage.failed").gauge().value()).isEqualTo(1.0);
 
                     BreakableStorage.FAULTS.setBroken(false);
                     await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
-                        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
-                        assertThat(indicator.health().getDetails()).doesNotContainKey("storageFailure");
+                        assertThat(indicator.get().status()).isEqualTo(Status.UP);
+                        assertThat(indicator.get().details()).doesNotContainKey("storageFailure");
                     });
                     assertThat(meters.get("kurin.raft.storage.failed").gauge().value()).isZero();
                     int value = template.<Integer>submitCommand(new Increment(1)).get(5, TimeUnit.SECONDS);
@@ -248,10 +247,12 @@ class KurinObservabilityTest {
                         "kurin.node.election-timeout-max=600ms",
                         "kurin.node.health.no-leader-threshold=500ms")
                 .run(context -> {
-                    KurinHealthIndicator indicator = context.getBean(KurinHealthIndicator.class);
-                    assertThat(indicator.health().getStatus()).isNotEqualTo(Status.UP);
-                    await().atMost(Duration.ofSeconds(10)).until(() -> indicator.health().getStatus().equals(Status.OUT_OF_SERVICE));
-                    assertThat(indicator.health().getDetails()).containsKey("leaderUnknownForMs");
+                    KurinNode node = context.getBean(KurinNode.class);
+                    Duration threshold = context.getBean(org.kurin.kurinspringbootstarter.starter.KurinProperties.class).getHealth().getNoLeaderThreshold();
+                    assertThat(threshold).isEqualTo(Duration.ofMillis(500));
+                    assertThat(KurinNodeHealth.of(node, threshold).status()).isNotEqualTo(Status.UP);
+                    await().atMost(Duration.ofSeconds(10)).until(() -> KurinNodeHealth.of(node, threshold).status() == Status.OUT_OF_SERVICE);
+                    assertThat(KurinNodeHealth.of(node, threshold).details()).containsKey("leaderUnknownForMs");
                 });
     }
 }

@@ -7,31 +7,30 @@ import org.kurin.routing.KurinDataSourceTopology;
 import org.kurin.routing.health.DataSourceHealthMonitor;
 import org.kurin.routing.shard.KurinShardOperations;
 import org.springframework.beans.factory.InitializingBean;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
-import org.springframework.boot.actuate.health.Status;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Optional metrics and health of data routing.
+ * Optional metrics of data routing. Its health indicators live in the Actuator adapter modules.
  * <p>
  * Meters: {@code kurin.routing.connections{shard,role}} (also the per-shard request count),
  * {@code kurin.routing.node.up{shard,role}}, {@code kurin.routing.fallbacks{shard,reason}},
  * {@code kurin.routing.fanout.duration}, {@code kurin.routing.fanout.failed.shards}.
  */
 @AutoConfiguration(after = KurinRoutingAutoConfiguration.class, afterName = {
+        // Spring Boot 3 names, then the names the same classes have in Spring Boot 4
         "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
-        "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration"})
+        "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration",
+        })
 @ConditionalOnBean(KurinRoutingDataSource.class)
 public class KurinRoutingObservabilityAutoConfiguration {
 
@@ -84,33 +83,4 @@ public class KurinRoutingObservabilityAutoConfiguration {
         }
     }
 
-    @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(HealthIndicator.class)
-    static class HealthConfiguration {
-        /**
-         * A dead replica never takes the application out of service: its reads are served by the primary. A dead
-         * primary does so only if {@code kurin.routing.health.primary-required} is set, because an application may
-         * well prefer to keep serving reads.
-         */
-        @Bean
-        @ConditionalOnMissingBean(name = "kurinRoutingHealthIndicator")
-        HealthIndicator kurinRoutingHealthIndicator(DataSourceHealthMonitor health, KurinDataSourceTopology topology,
-                                                    KurinRoutingProperties props) {
-            return () -> {
-                Map<String, Object> nodes = new LinkedHashMap<>();
-                boolean primaryDown = false;
-                boolean anyDown = false;
-                for (Map.Entry<DataSourceHealthMonitor.NodeId, Boolean> node : health.states().entrySet()) {
-                    nodes.put(node.getKey().toString(), node.getValue() ? "UP" : "DOWN");
-                    anyDown |= !node.getValue();
-                    primaryDown |= !node.getValue() && node.getKey().role() == DataSourceType.PRIMARY;
-                }
-                Map<String, Object> weights = new LinkedHashMap<>();
-                topology.shards().forEach((name, shard) -> weights.put(name, shard.weight()));
-                Status status = primaryDown && props.getHealth().isPrimaryRequired() ? Status.OUT_OF_SERVICE : Status.UP;
-                return Health.status(status).withDetail("degraded", anyDown).withDetail("nodes", nodes)
-                        .withDetail("shardWeights", weights).build();
-            };
-        }
-    }
 }

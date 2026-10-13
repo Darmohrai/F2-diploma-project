@@ -4,11 +4,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.kurin.kurinspringbootstarter.starter.KurinAutoConfiguration;
 import org.kurin.kurinspringbootstarter.starter.KurinNodeCustomizer;
-import org.kurin.kurinspringbootstarter.starter.KurinProperties;
 import org.kurin.raft.KurinNode;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
-import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -21,10 +18,15 @@ import org.springframework.context.annotation.Configuration;
  * the classpath and its registry bean exists, and the node works the same without any of them.
  */
 @AutoConfiguration(after = KurinAutoConfiguration.class, afterName = {
+        // Spring Boot 3 names, then the names the same classes have in Spring Boot 4
         "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration",
-        "org.springframework.boot.actuate.autoconfigure.observation.ObservationAutoConfiguration"})
+        "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.observation.ObservationAutoConfiguration",
+        "org.springframework.boot.micrometer.observation.autoconfigure.ObservationAutoConfiguration"})
 @ConditionalOnBean(KurinNode.class)
 public class KurinObservabilityAutoConfiguration {
 
@@ -57,17 +59,7 @@ public class KurinObservabilityAutoConfiguration {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(HealthIndicator.class)
-    static class HealthConfiguration {
-        @Bean
-        @ConditionalOnMissingBean(name = "kurinHealthIndicator")
-        KurinHealthIndicator kurinHealthIndicator(KurinNode node, KurinProperties props) {
-            return new KurinHealthIndicator(node, props.getHealth().getNoLeaderThreshold());
-        }
-    }
-
-    @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(Endpoint.class)
+    @ConditionalOnClass(name = "org.springframework.boot.actuate.endpoint.annotation.Endpoint")
     static class EndpointConfiguration {
         @Bean
         @ConditionalOnMissingBean

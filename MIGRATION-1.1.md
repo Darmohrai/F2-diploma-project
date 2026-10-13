@@ -311,3 +311,41 @@ Pick one:
 - The health contributor `kurin` reports `DOWN` while the storage of the node is failed. A liveness probe that
   includes it will restart the instance; if the disk is expected to come back, keep it in the readiness group only.
 - New properties `kurin.node.storage-retry-min` (100 ms) and `kurin.node.storage-retry-max` (10 s).
+
+## Health indicators moved to adapter modules
+
+The starters no longer contain health indicators. Add the adapter for your Spring Boot generation:
+
+```xml
+<dependency>
+    <groupId>org.kurin</groupId>
+    <artifactId>kurin-actuator-boot3</artifactId>   <!-- Spring Boot 3.2 - 3.5 -->
+    <version>1.1.1</version>
+</dependency>
+<!-- or kurin-actuator-boot4 for Spring Boot 4.x -->
+```
+
+Without it the application works as before, with metrics and `/actuator/kurin`, but `/actuator/health` has no
+`kurin`, `kurinCache` and `kurinRouting` entries.
+
+- `org.kurin.kurinspringbootstarter.observability.KurinHealthIndicator` is removed. The verdict is
+  `org.kurin.raft.KurinNodeHealth.of(node, noLeaderThreshold)`; the bean `kurinHealthIndicator` is now a
+  `HealthIndicator` declared by the adapter.
+- The indicators can be switched off the standard way: `management.health.kurin.enabled=false`,
+  `management.health.kurin-cache.enabled=false`, `management.health.kurin-routing.enabled=false`. A bean with the
+  name of an indicator still replaces it.
+- With the routing starter and an adapter, the `db` health of Spring Boot is replaced by a composite of the
+  physical pools (`<shard>.primary`, `<shard>.replica`) plus any data source that is not behind the routing. The
+  old `db` entry checked the routing data source itself and was always `DOWN` with more than one shard.
+  `management.health.db.enabled=false` switches it off; a bean named `dbHealthContributor` or `dbHealthIndicator`
+  replaces it.
+- `/actuator/kurin` has a new section `routing` when both the node starter and the routing starter are used.
+
+## Spring Boot 4
+
+Kurin 1.1.1 runs on Spring Boot 3.2 - 3.5 and on Spring Boot 4.x with the same jars; see
+`docs/boot-compatibility.md`. Nothing changes for an application on Spring Boot 3 except the adapter above.
+
+- The starters no longer bring `spring-boot-starter-aop` (it does not exist under that name in Spring Boot 4) but
+  `spring-aop` and `aspectjweaver`. An application that relied on the starter being there transitively, for
+  aspects of its own, should declare it.

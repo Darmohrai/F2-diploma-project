@@ -25,7 +25,7 @@ public class KurinEndpoint {
     @ReadOperation
     public Map<String, Object> kurin() {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("node", describeNode(node));
+        response.put("node", org.kurin.raft.KurinNodeHealth.describe(node));
         contributors.orderedStream().forEach(contributor -> {
             try {
                 response.put(contributor.name(), contributor.describe());
@@ -36,30 +36,4 @@ public class KurinEndpoint {
         return response;
     }
 
-    static Map<String, Object> describeNode(KurinNode node) {
-        RaftStatus status = node.status();
-        Map<String, Object> details = new LinkedHashMap<>();
-        details.put("nodeId", status.nodeId());
-        details.put("started", node.isStarted());
-        details.put("role", status.role().name());
-        details.put("term", status.term());
-        details.put("leaderId", status.leaderId());
-        details.put("leadershipEstablished", node.leadership().isPresent());
-        details.put("commitIndex", status.commitIndex());
-        details.put("lastApplied", status.lastApplied());
-        details.put("lastLogIndex", status.lastLogIndex());
-        details.put("logEntries", node.logEntries());
-        if (status.storageFailed()) {
-            details.put("storageFailure", status.storageFailure());
-        }
-
-        Map<String, Object> peers = new LinkedHashMap<>();
-        Map<String, java.time.Duration> contacts = node.peerContactAges();
-        node.peers().forEach(peer -> {
-            java.time.Duration age = contacts.get(peer.asString());
-            peers.put(peer.asString(), age != null ? Map.of("lastContactMsAgo", age.toMillis()) : Map.of("lastContactMsAgo", "unknown"));
-        });
-        details.put("peers", peers);
-        return details;
-    }
 }

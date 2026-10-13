@@ -6,27 +6,23 @@ import org.kurin.kurinspringbootstarter.observability.KurinEndpointContributor;
 import org.kurin.kurintieredcache.api.CacheResult;
 import org.kurin.kurintieredcache.api.KurinCacheObserver;
 import org.kurin.kurintieredcache.api.StampedeMode;
+import org.kurin.kurintieredcache.core.KurinCacheHealth;
 import org.kurin.kurintieredcache.core.KurinCacheManager;
-import org.kurin.kurintieredcache.core.TieredCache;
 import org.kurin.kurintieredcache.tier.CircuitBreaker;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Optional metrics, health and Actuator section of the cache.
+ * Optional metrics and Actuator section of the cache. Its health indicator lives in the Actuator adapter modules.
  * <p>
  * Meters: {@code kurin.cache.gets{cache,tier,result}}, {@code kurin.cache.loads{cache,result}},
  * {@code kurin.cache.load.duration{cache}}, {@code kurin.cache.evictions{cache,reason}},
@@ -34,9 +30,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * (0 closed, 1 half-open, 2 open).
  */
 @AutoConfiguration(before = KurinCacheAutoConfiguration.class, afterName = {
+        // Spring Boot 3 names, then the names the same classes have in Spring Boot 4
         "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
-        "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration"})
+        "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration",
+        })
 @ConditionalOnClass(KurinCacheManager.class)
 public class KurinCacheObservabilityAutoConfiguration {
 
@@ -100,40 +101,6 @@ public class KurinCacheObservabilityAutoConfiguration {
         }
     }
 
-    private static Map<String, Object> describeCaches(KurinCacheManager manager) {
-        Map<String, Object> caches = new LinkedHashMap<>();
-        for (TieredCache cache : manager.caches()) {
-            Map<String, Object> details = new LinkedHashMap<>();
-            details.put("tiers", cache.tiers().toString());
-            details.put("ttl", cache.settings().ttl().toString());
-            details.put("memoryEntries", cache.memoryEntries());
-            if (cache.externalCircuitState() != null) {
-                details.put("externalStoreCircuit", cache.externalCircuitState().name());
-                details.put("externalStoreShared", cache.hasSharedTier());
-            }
-            caches.put(cache.name(), details);
-        }
-        return caches;
-    }
-
-    @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(HealthIndicator.class)
-    static class HealthConfiguration {
-        /**
-         * Never DOWN: the external tier is optional by design, and with its circuit open the cache keeps working
-         * from memory, disk and the source. An open circuit is reported as a degraded detail.
-         */
-        @Bean
-        @ConditionalOnMissingBean(name = "kurinCacheHealthIndicator")
-        HealthIndicator kurinCacheHealthIndicator(KurinCacheManager manager) {
-            return () -> {
-                boolean degraded = manager.caches().stream()
-                        .anyMatch(cache -> cache.externalCircuitState() != null && cache.externalCircuitState() != CircuitBreaker.State.CLOSED);
-                return Health.up().withDetail("degraded", degraded).withDetail("caches", describeCaches(manager)).build();
-            };
-        }
-    }
-
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(KurinEndpointContributor.class)
     static class EndpointConfiguration {
@@ -147,7 +114,7 @@ public class KurinCacheObservabilityAutoConfiguration {
 
                 @Override
                 public Object describe() {
-                    return describeCaches(manager);
+                    return KurinCacheHealth.describe(manager);
                 }
             };
         }

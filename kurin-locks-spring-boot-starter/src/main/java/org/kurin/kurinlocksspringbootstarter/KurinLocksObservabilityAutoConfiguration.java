@@ -28,9 +28,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * {@code kurin.jobs.claims{job,result}}, {@code kurin.jobs.duration{job,status}}.
  */
 @AutoConfiguration(after = KurinLocksAutoConfiguration.class, afterName = {
+        // Spring Boot 3 names, then the names the same classes have in Spring Boot 4
         "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
-        "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration"})
+        "org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration",
+        })
 @ConditionalOnBean(KurinLockManager.class)
 public class KurinLocksObservabilityAutoConfiguration {
 

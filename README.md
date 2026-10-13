@@ -15,9 +15,26 @@ No external coordinator (ZooKeeper, etcd, Redis) is needed: the instances are th
 | [`kurin-locks`](kurin-locks/README.md), [`kurin-locks-spring-boot-starter`](kurin-locks-spring-boot-starter/README.md) | Fenced locks, leader-only code, run-once-per-slot jobs. |
 | [`kurin-tiered-cache`](kurin-tiered-cache/README.md), [`kurin-cache-spring-boot-starter`](kurin-cache-spring-boot-starter/README.md) | Memory / disk / external cache with invalidation replicated to all instances. |
 | [`kurin-data-routing`](kurin-data-routing/README.md), [`kurin-data-routing-spring-boot-starter`](kurin-data-routing-spring-boot-starter/README.md) | Read/write splitting with read-your-writes across instances, shard routing. Independent of the cluster. |
+| [`kurin-actuator-boot3`](kurin-actuator-boot3/README.md), [`kurin-actuator-boot4`](kurin-actuator-boot4/README.md) | Health indicators for the Actuator of Spring Boot 3 and of Spring Boot 4. Add the one for your generation. |
 | [`kurin-test`](kurin-test/README.md) | In-process test cluster with fault injection. |
 
-Plain modules have no Spring at runtime; Spring lives in the `*-spring-boot-starter` modules.
+Plain modules have no Spring at runtime; Spring lives in the `*-spring-boot-starter` modules and the Actuator
+adapters.
+
+## Compatibility
+
+Java 21 or later. The same jars run on both generations of Spring Boot:
+
+| Spring Boot | Status | Actuator adapter |
+|---|---|---|
+| 3.2.x | built and tested on 3.2.12 in every build | `kurin-actuator-boot3` |
+| 3.3.x, 3.4.x | not tested separately; between two tested lines of the same generation | `kurin-actuator-boot3` |
+| 3.5.x | tested on 3.5.16 | `kurin-actuator-boot3` |
+| 4.x | built and tested on 4.1.1 in every build | `kurin-actuator-boot4` |
+
+The starters use only API that is the same in both generations; the health API, which is not, is in the two
+adapter modules. An application without Actuator needs neither. How this was established, class by class, is in
+[docs/boot-compatibility.md](docs/boot-compatibility.md).
 
 ## Quick start
 

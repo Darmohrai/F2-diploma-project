@@ -38,7 +38,10 @@ import java.util.Map;
  * Activates when the application declares a {@link KurinDataSourceTopology} bean, and publishes the routing
  * {@code DataSource} as the primary one.
  */
-@AutoConfiguration(beforeName = "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration")
+// The data source autoconfiguration of Spring Boot 3, and the name the same class has in Spring Boot 4
+@AutoConfiguration(beforeName = {
+        "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration",
+        "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration"})
 @ConditionalOnClass(LazyConnectionDataSourceProxy.class)
 @ConditionalOnBean(KurinDataSourceTopology.class)
 @EnableAspectJAutoProxy
@@ -165,6 +168,14 @@ public class KurinRoutingAutoConfiguration {
     @ConditionalOnMissingBean
     public KurinShardOperations kurinShardOperations(KurinShardRouter router, KurinRoutingProperties props) {
         return new KurinShardOperations(router, props.getFanOut().getParallelism());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public KurinRoutingDiagnostics kurinRoutingDiagnostics(KurinDataSourceTopology topology, DataSourceHealthMonitor monitor,
+                                                           KurinRoutingProperties props, ShardResolver resolver,
+                                                           ObjectProvider<ReplicaPositionProbe> probes) {
+        return new KurinRoutingDiagnostics(topology, monitor, props, resolver, probes);
     }
 
     @Bean

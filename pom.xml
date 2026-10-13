@@ -6,7 +6,7 @@
 
     <groupId>org.kurin</groupId>
     <artifactId>kurin-router-parent</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
     <packaging>pom</packaging>
 
     <name>Kurin</name>
@@ -19,7 +19,11 @@
         <maven.compiler.parameters>true</maven.compiler.parameters>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
+        <!-- Spring Boot the starters are compiled and tested against. Profile boot4 switches it to the 4.x line. -->
         <spring-boot.version>3.2.12</spring-boot.version>
+        <!-- Fixed lines for the modules that are bound to one generation of Spring Boot -->
+        <kurin.boot3.version>3.2.12</kurin.boot3.version>
+        <kurin.boot4.version>4.1.1</kurin.boot4.version>
         <kryo.version>5.6.2</kryo.version>
         <rocksdb.version>8.8.1</rocksdb.version>
     </properties>
@@ -34,6 +38,10 @@
         <module>kurin-cache-spring-boot-starter</module>
         <module>kurin-data-routing</module>
         <module>kurin-data-routing-spring-boot-starter</module>
+        <module>kurin-actuator-boot3</module>
+        <module>kurin-actuator-boot4</module>
+        <module>kurin-it-boot3</module>
+        <module>kurin-it-boot4</module>
     </modules>
 
     <dependencyManagement>
@@ -92,6 +100,26 @@
                 <artifactId>kurin-data-routing</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-cache-spring-boot-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-data-routing-spring-boot-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-actuator-boot3</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.kurin</groupId>
+                <artifactId>kurin-actuator-boot4</artifactId>
+                <version>${project.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -111,7 +139,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.2.5</version>
+                    <version>3.5.5</version>
                     <configuration>
                         <systemPropertyVariables>
                             <kurin.debug.thread-checks>true</kurin.debug.thread-checks>
@@ -121,5 +149,16 @@
             </plugins>
         </pluginManagement>
     </build>
+
+    <profiles>
+        <!-- Compiles the starters against Spring Boot 4 and runs their tests on it. The modules bound to one
+             generation of Spring Boot (kurin-actuator-boot3/boot4, kurin-it-boot3/boot4) keep their own. -->
+        <profile>
+            <id>boot4</id>
+            <properties>
+                <spring-boot.version>${kurin.boot4.version}</spring-boot.version>
+            </properties>
+        </profile>
+    </profiles>
 
 </project>

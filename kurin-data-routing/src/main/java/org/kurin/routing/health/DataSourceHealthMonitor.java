@@ -43,6 +43,7 @@ public class DataSourceHealthMonitor implements AutoCloseable {
         final NodeId id;
         final DataSource dataSource;
         volatile boolean up = true;
+        volatile String lastFailure;
         int consecutiveSuccesses;
 
         Node(NodeId id, DataSource dataSource) {
@@ -106,6 +107,14 @@ public class DataSourceHealthMonitor implements AutoCloseable {
     }
 
     /**
+     * @return why the node is down, as reported by the check or the router that found it so; null while it is up
+     */
+    public String failureOf(String shard, DataSourceType role) {
+        Node node = nodes.get(new NodeId(shard, role));
+        return node != null && !node.up ? node.lastFailure : null;
+    }
+
+    /**
      * Called by the router when it could not get a connection from the node.
      */
     public void reportFailure(String shard, DataSourceType role, Throwable error) {
@@ -153,6 +162,7 @@ public class DataSourceHealthMonitor implements AutoCloseable {
                 return;
             }
             node.up = true;
+            node.lastFailure = null;
         }
         log.info("Database node {} is available again", node.id);
         notifyListeners(node.id, true, "recovered");
@@ -161,6 +171,7 @@ public class DataSourceHealthMonitor implements AutoCloseable {
     private void markDown(Node node, String reason) {
         synchronized (node) {
             node.consecutiveSuccesses = 0;
+            node.lastFailure = reason;
             if (!node.up) {
                 return;
             }

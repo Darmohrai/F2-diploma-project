@@ -451,7 +451,7 @@ Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review o
 | Phase | Scope | Status |
 |-------|-------|--------|
 | A | Services without snapshots (section 4), disk failure (section 3) | done |
-| B | Spring Boot 3.2+ and 4.x compatibility, Actuator adapters, integration test modules (section 2) | pending |
+| B | Spring Boot 3.2+ and 4.x compatibility, Actuator adapters, integration test modules (section 2) | done |
 | C | Database access outside of a shard, migrations per shard, `db` health, Hibernate (section 1) | pending |
 | D | Routing section of `/actuator/kurin`, fan-out observation, `diff` performance (section 5) | pending |
 | E | Stability runs, release 1.1.1 (sections 6 and 7) | pending |
@@ -516,3 +516,70 @@ Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review o
 - **`AT_MOST_ONCE` semantics of commands are unchanged.** A command refused with `KurinStorageException` before it
   was appended was not applied; one that was already in the log has an unknown outcome and can be retried with
   the same request id, exactly as after a leader change.
+
+## 1.1.1, phase B
+
+### Done
+
+- **Audit** in `docs/boot-compatibility.md`: every class of Spring Boot and Spring Framework the modules use, where
+  it is in Spring Boot 3.2.12 and in 4.1.1, and how a difference is handled. The facts were read from the jars
+  (`jar tf`, `javap`) of both versions; 4.1.1 was the latest stable 4.x on Maven Central.
+- **The starters are neutral.** They refer to autoconfigurations of Spring Boot only by name, with the Spring
+  Boot 3 and the Spring Boot 4 name where the class moved (metrics, observation, data source). They no longer
+  depend on `spring-boot-starter-aop`, which Spring Boot 4 renamed, but on `spring-aop` and `aspectjweaver`.
+- **Health verdicts moved out of Spring**: `KurinNodeHealth` (`core`), `KurinCacheHealth` (`kurin-tiered-cache`),
+  `KurinRoutingHealth` (`kurin-data-routing`), and the bean `KurinRoutingDiagnostics` in the routing starter. The
+  starters contain no class of the health API any more.
+- **`kurin-actuator-boot3` and `kurin-actuator-boot4`**: health indicators `kurin`, `kurinCache`, `kurinRouting`,
+  the composite `db` of the physical pools (section 1.3), and the `routing` section of `/actuator/kurin` (section
+  5.1). Each imports the BOM of its generation at module level. Every indicator honours
+  `management.health.<name>.enabled` and `management.health.defaults.enabled` through
+  `@ConditionalOnEnabledHealthIndicator` of its generation, and yields to a bean of the same name. This closes
+  the deviation of 1.1.0 phase 8.
+- **Build**: the default build has all 14 modules, including `kurin-actuator-boot4` and `kurin-it-boot4` on the
+  Spring Boot 4 BOM. Profile `boot4` (`./mvnw -Pboot4 clean install`) switches the BOM of the starters to 4.1.1 and
+  runs their tests on it; the modules bound to one generation keep theirs. Surefire is 3.5.5, which runs both
+  JUnit 5 (Spring Boot 3) and JUnit 6 (Spring Boot 4). `jitpack.yml` is unchanged: `./mvnw clean install
+  -DskipTests` builds everything on Java 21.
+- **`kurin-it-boot3` and `kurin-it-boot4`** compile and run the same sources (`kurin-it/src`): an application with
+  a replicated counter, a distributed lock, a `@KurinScheduledOnce` job, a cache on L1 + L2 + shared in-memory L3
+  with `@KurinCacheEvict` in a transaction, and routing over two shards with a replica each. The test starts
+  three instances with web servers in one JVM and checks over HTTP: one leader and commands from any instance,
+  the job running on one instance per slot, the lock admitting one instance at a time, invalidation reaching all
+  instances after commit, read-your-writes through the token header across instances, `/actuator/health` UP with
+  all Kurin contributors, `/actuator/kurin` with all sections, and the meters of every module. They are not
+  installed or deployed (`maven.install.skip`, `maven.deploy.skip`).
+- Tests: `KurinActuatorAdapterTest` in both adapter modules (11 tests each).
+
+### Verification
+
+| Build | Starters compiled and tested on | Result |
+|---|---|---|
+| `./mvnw clean install` | 3.2.12 | green, 169 tests |
+| `./mvnw -Pboot4 clean install` | 4.1.1 | green (155 tests before the integration modules had tests; repeated at the end of phase E) |
+| `./mvnw -Dspring-boot.version=3.5.16 -Dkurin.boot3.version=3.5.16 clean install` | 3.5.16 | green, 169 tests |
+
+In the default build the starter jars compiled against 3.2.12 run on 4.1.1 in `kurin-actuator-boot4` and
+`kurin-it-boot4`; with `-Pboot4` the jars compiled against 4.1.1 run on 3.2.12 in `kurin-actuator-boot3` and
+`kurin-it-boot3`. Both directions pass. Spring Boot 3.3 and 3.4 were not run separately: they lie between two
+lines that pass, and the API Kurin uses did not change inside the 3.x line.
+
+### Decisions and deviations
+
+- **Only health needed adapters.** The spec allows moving the endpoint too, if the endpoint API changed. It did
+  not: `@Endpoint` and `@ReadOperation` have the same names and attributes in both generations, so
+  `/actuator/kurin` and `KurinEndpointContributor` stay in the node starter.
+- **The health verdicts live in the plain modules, not in the starters** as the spec suggests
+  (`KurinHealthSnapshot`). They need nothing of Spring, and the routing starter does not depend on the node
+  starter, so there is no starter all three could share.
+- **A tolerated dead database node is reported `UP` with `degraded: true` and `state: DOWN`** in the `db`
+  composite. A composite takes the worst status of its parts, so a part that reported `DOWN` would take the
+  instance out of the load balancer for a dead replica, which is exactly what section 1.3 is about.
+- **With `kurin.routing.health.enabled=false` the `db` health asks the pools directly**, as Spring Boot would,
+  because then nobody watches them.
+- **Data sources that are not behind the routing keep their ordinary health** inside the same `db` composite.
+  Replacing the contributor of Spring Boot must not make them disappear.
+- **The integration tests talk plain text and match JSON by substring.** Spring Boot 3 ships Jackson 2 and
+  Spring Boot 4 Jackson 3, in different packages and with a different field order; a JSON library in the shared
+  test sources would tie them to one generation.
+- **JPA and Liquibase in the integration application come with phase C**, which makes them work on two shards.
