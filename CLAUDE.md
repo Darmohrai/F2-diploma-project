@@ -177,6 +177,14 @@ refusal set the mode `fail`. `KurinShardedMigrationsAutoConfiguration` replaces 
 bean that points at the routing data source by one that runs the same configuration on every primary.
 `KurinRoutingDiagnostics` is what health and `/actuator/kurin` read.
 
+`DataSourceHealthMonitor` takes a node out after `failureThreshold` failed checks in a row, or at once when the
+router reports a failed connection, but only if `ConnectionFailureClassifier` does not take the failure for an
+exhausted pool; whatever it does not recognise counts against the node. Checks are made by a `NodeProbe`:
+`DriverNodeProbe` over a connection of its own per node (parameters read from the data source by reflection, a
+fallback to the pool with a warning), `PoolNodeProbe` through the application's pool. The router does not fall
+back to the primary, and does not throw `KurinPrimaryUnavailableException`, for a pool timeout. A new way for a
+pool to say "no free connection" belongs in the classifier, with a test that uses the real exception.
+
 ## Testing
 
 Raft behaviour is tested in `kurin-test` (`RaftClusterTest`, `RaftSafetyTest`, `RaftPersistenceTest`,
@@ -184,4 +192,6 @@ Raft behaviour is tested in `kurin-test` (`RaftClusterTest`, `RaftSafetyTest`, `
 Spring tests start several contexts in one JVM. Fields of AOP-proxied beans read as null in tests: go through
 methods. A new test that waits for a leader should use `awaitLeader` and, before asserting on followers,
 `awaitInSync`. Assertions on elapsed time need a margin that survives a pause of the JVM of a few
-hundred milliseconds; short time-to-live values in tests are a race against such a pause.
+hundred milliseconds; short time-to-live values in tests are a race against such a pause. A test that slows the
+heartbeats of the leader down (`cluster.delay`) needs election timeouts well above the delay, or the leader
+steps down. A build in a git worktree must use `-am`: `-pl` alone takes the sibling modules from `~/.m2`.

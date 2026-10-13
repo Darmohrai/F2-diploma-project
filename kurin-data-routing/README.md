@@ -48,9 +48,58 @@ other clients' reads onto the primary with a forged token.
 
 ## Health
 
-`DataSourceHealthMonitor` checks every node with `Connection.isValid` on its own threads. A node is taken out
-after a failed check or a connection failure reported by the router, and returns after a number of consecutive
-good checks. Listeners get up and down transitions.
+`DataSourceHealthMonitor` knows which nodes are usable. A node is taken out of use
+
+- when the periodic check failed `failureThreshold` times in a row (2 by default), or
+- at once, when the router reports that a request could not connect to it.
+
+It is used again after `recoveryThreshold` good checks in a row. Listeners get the transitions.
+
+```java
+DataSourceHealthMonitor monitor = new DataSourceHealthMonitor(
+        Duration.ofSeconds(5), Duration.ofSeconds(1),      // interval, longest check
+        2, 2,                                              // failure threshold, recovery threshold
+        new DriverNodeProbe());
+monitor.register("eu", DataSourceType.REPLICA, replicaPool);
+monitor.start();
+```
+
+**A pool without a free connection is not a node that is down.** Under load a pool runs out of connections and
+callers time out waiting; the database behind it is in order, and marking it down would move its load to the
+nodes that are left. `ConnectionFailureClassifier` tells the cases apart:
+
+| `FailureKind` | Recognised by | Node |
+|---|---|---|
+| `CONNECTION_FAILED` | SQLState class `08`, `SQLNonTransientConnectionException`, a refused, reset or timed out socket, an unknown host; also a pool timeout whose cause is one of these (HikariCP reports its last failed attempt to create a connection as the cause) | out of use |
+| `AUTHENTICATION_FAILED` | SQLState class `28`, `SQLInvalidAuthorizationSpecException` | out of use |
+| `POOL_EXHAUSTED` | the timeout of HikariCP (`SQLTransientConnectionException` without state and cause), Tomcat JDBC (`PoolExhaustedException`) or Commons Pool behind DBCP (`Timeout waiting for idle object`), with nothing in the cause chain that points at the node | **stays as it is**; `Listener.onPoolExhausted` is called |
+| `UNKNOWN` | anything else | out of use |
+
+Whatever is not recognised counts against the node, so an unknown way of failing is never mistaken for load. The
+price is that a pool this classifier does not know behaves as before 1.1.2.
+
+**Checks do not go through the pool.** A `NodeProbe` makes the check:
+
+- `DriverNodeProbe` (default) keeps one connection of its own per node, opened through the JDBC driver with the
+  URL and credentials read from the data source (`getJdbcUrl()` or `getUrl()`, `getUsername()`, `getPassword()`;
+  HikariCP, Tomcat JDBC, DBCP and Spring's simple data sources have them). It asks that connection `isValid` at
+  every check and replaces it when it stopped working, so a restart of the database between two checks is not a
+  failed check. The check is given up after the timeout whatever the driver does. One connection per node and
+  application instance is the whole cost; a new connection per check would fail exactly when the database is at
+  its connection limit.
+- `PoolNodeProbe` borrows a connection from the pool for every check, as all versions before 1.1.2 did. A check
+  that finds the pool exhausted waits for the pool's own timeout and learns nothing; it changes no state.
+- A node whose data source does not tell its URL, or whose URL has no registered driver, is checked through the
+  pool by `DriverNodeProbe` too, with a warning at registration. The same happens if the probe's own connection
+  has never worked although the pool does (the pool adds properties the URL lacks, or gets its credentials
+  elsewhere): the probe says so once and uses the pool for that node from then on.
+- `new DriverNodeProbe((node, dataSource) -> Optional.of(new ConnectionParameters(url, user, password)))` supplies
+  the parameters where the data source cannot; any other `NodeProbe` can check in a way of its own.
+
+The longest time between a node going away and its being taken out by the checks alone is
+`failureThreshold * (interval + timeout)`; when the node refuses connections outright, which is the usual case,
+it is `failureThreshold * interval` plus one check. A request that hits the dead node takes it out sooner.
+`KurinRoutingHealth` reports why a node is down (`failure`) and what the failure was taken for (`failureKind`).
 
 ## Shards
 

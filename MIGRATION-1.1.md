@@ -442,3 +442,33 @@ If you construct `KurinLocksAspect` yourself, the three-argument constructor sti
 attributes as written; pass the `KurinCoordinationRegistry` bean as a fourth argument to have placeholders
 resolved.
 
+## Data routing: a busy pool is no longer a dead node
+
+What callers observe differently:
+
+- **A request that times out waiting for a connection pool fails with the pool's exception.** Before, a read on
+  an exhausted replica pool marked the replica down and was served by the primary, and a write on an exhausted
+  primary pool got `KurinPrimaryUnavailableException`. Now the node stays up, the read is not moved, and the
+  caller gets what the pool threw (wrapped by Spring as usual, for example in `CannotGetJdbcConnectionException`).
+  If your code relied on reads spilling over to the primary under load, it relied on the defect; size the replica
+  pool for its load, or route such reads to the primary explicitly with `@KurinPrimary`.
+- **One failed health check no longer takes a node out.** `kurin.routing.health.failure-threshold` is new and
+  defaults to `2`: a node goes out after two failed checks in a row, which is one `interval` later than before
+  (5 s with the defaults). A request that cannot connect to the node still takes it out at once. Set the
+  property to `1` for the old timing.
+- **Health checks open a connection of their own.** `kurin.routing.health.probe` is new and defaults to `driver`:
+  each application instance keeps one extra connection per database node, opened through the JDBC driver with
+  the URL, user and password read from the node's data source. Count it against `max_connections`. The check no
+  longer waits for the application's pool. Set `kurin.routing.health.probe=pool` for the old check; a pool
+  timeout during such a check is then ignored instead of taking the node down.
+- A node whose data source does not expose a JDBC URL is checked through the pool whatever the setting, and a
+  warning says so at startup. Declare a `NodeProbe` bean to check such a node differently.
+- The health details of a node that is down have a new entry, `failureKind`. New meters:
+  `kurin.routing.pool.exhausted{shard,role}`, `kurin.routing.node.transitions{shard,role,to}`.
+
+API, all additive: `ConnectionFailureClassifier`, `NodeProbe`, `DriverNodeProbe`, `PoolNodeProbe`,
+`ConnectionParameters`; `DataSourceHealthMonitor` has a five-argument constructor, `reportConnectionFailure`,
+`failureKindOf` and `Listener.onPoolExhausted` (a default method); `KurinRoutingHealth.NodeHealth` has a sixth
+component `failureKind`, and its five-argument constructor remains. The three-argument constructor of
+`DataSourceHealthMonitor` now uses a failure threshold of 2 and a `DriverNodeProbe`; for the behaviour of 1.1.1
+use `new DataSourceHealthMonitor(interval, timeout, 1, recoveryThreshold, new PoolNodeProbe())`.

@@ -6,6 +6,7 @@ import org.kurin.routing.consistency.ReplicaPositionProbe;
 import org.kurin.routing.consistency.ReplicaPositionTokenStrategy;
 import org.kurin.routing.consistency.TimestampTokenStrategy;
 import org.kurin.routing.health.DataSourceHealthMonitor;
+import org.kurin.routing.health.PoolNodeProbe;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Proxy;
@@ -111,7 +112,9 @@ class ConsistencyAndHealthTest {
         AtomicBoolean primaryAvailable = new AtomicBoolean(true);
         AtomicBoolean replicaAvailable = new AtomicBoolean(true);
         List<String> changes = new ArrayList<>();
-        try (DataSourceHealthMonitor monitor = new DataSourceHealthMonitor(Duration.ofHours(1), Duration.ofSeconds(1), 3)) {
+        // One failed check is enough here: the test is about recovery. The threshold has tests of its own.
+        try (DataSourceHealthMonitor monitor = new DataSourceHealthMonitor(Duration.ofHours(1), Duration.ofSeconds(1), 1, 3,
+                new PoolNodeProbe())) {
             monitor.register("A", DataSourceType.PRIMARY, dataSource(primaryAvailable));
             monitor.register("A", DataSourceType.REPLICA, dataSource(replicaAvailable));
             monitor.addListener((node, up, reason) -> changes.add(node + (up ? " up" : " down")));

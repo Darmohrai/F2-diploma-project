@@ -317,7 +317,9 @@ cannot be discovered from handler signatures.
 | `health.enabled` | boolean | `true` | Periodic checks of database nodes. |
 | `health.interval` | Duration | `5s` | Time between checks. |
 | `health.timeout` | Duration | `1s` | Longest check. |
+| `health.failure-threshold` | int | `2` | Failed checks in a row before a node is taken out of use. A request that cannot connect to the node takes it out at once. |
 | `health.recovery-threshold` | int | `2` | Good checks before a node is used again. |
+| `health.probe` | `DRIVER` | `POOL` | `DRIVER` | How a node is checked: over a connection of the check's own, opened through the JDBC driver, or with a connection borrowed from the application's pool. A `NodeProbe` bean replaces both. |
 | `health.primary-required` | boolean | `false` | Report `OUT_OF_SERVICE` when a primary is down. |
 | `fan-out.parallelism` | int | `8` | Shards worked on at once by `executeOnAllShards`. |
 | `unrouted.mode` | `STARTUP_ONLY` | `FAIL` | `DEFAULT_SHARD` | `STARTUP_ONLY` | With several shards, what database access without a selected shard gets: the primary of the unrouted shard while the application starts and an error afterwards; always an error; or always the unrouted shard. |

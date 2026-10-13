@@ -1,5 +1,6 @@
 package org.kurin.routing.spring;
 
+import org.kurin.routing.health.DataSourceHealthMonitor;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -154,9 +155,19 @@ public class KurinRoutingProperties {
          */
         private Duration timeout = Duration.ofSeconds(1);
         /**
+         * Failed checks in a row after which a node that was up is taken out of use. A request that cannot connect
+         * to the node takes it out at once, whatever this is.
+         */
+        private int failureThreshold = DataSourceHealthMonitor.DEFAULT_FAILURE_THRESHOLD;
+        /**
          * Successful checks in a row after which a node that was down is used again.
          */
         private int recoveryThreshold = 2;
+        /**
+         * How a node is checked: over a connection of the check's own, opened through the JDBC driver (driver), or
+         * with a connection borrowed from the pool of the application (pool). A NodeProbe bean replaces both.
+         */
+        private Probe probe = Probe.DRIVER;
         /**
          * Report the application as out of service when a primary is down.
          */
@@ -171,8 +182,26 @@ public class KurinRoutingProperties {
         public Duration getTimeout() { return timeout; }
         public void setTimeout(Duration timeout) { this.timeout = timeout; }
 
+        public int getFailureThreshold() { return failureThreshold; }
+        public void setFailureThreshold(int failureThreshold) { this.failureThreshold = failureThreshold; }
+
         public int getRecoveryThreshold() { return recoveryThreshold; }
         public void setRecoveryThreshold(int recoveryThreshold) { this.recoveryThreshold = recoveryThreshold; }
+
+        public Probe getProbe() { return probe; }
+        public void setProbe(Probe probe) { this.probe = probe; }
+
+        public enum Probe {
+            /**
+             * A connection per node that belongs to the health check. Never waits for the pool. Falls back to
+             * the pool, with a warning, for a node whose data source does not expose its JDBC URL.
+             */
+            DRIVER,
+            /**
+             * A connection borrowed from the pool of the application for every check.
+             */
+            POOL
+        }
 
         public boolean isPrimaryRequired() { return primaryRequired; }
         public void setPrimaryRequired(boolean primaryRequired) { this.primaryRequired = primaryRequired; }

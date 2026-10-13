@@ -8,6 +8,9 @@ import org.kurin.routing.consistency.ReplicaPositionProbe;
 import org.kurin.routing.consistency.ReplicaPositionTokenStrategy;
 import org.kurin.routing.consistency.TimestampTokenStrategy;
 import org.kurin.routing.health.DataSourceHealthMonitor;
+import org.kurin.routing.health.DriverNodeProbe;
+import org.kurin.routing.health.NodeProbe;
+import org.kurin.routing.health.PoolNodeProbe;
 import org.kurin.routing.shard.ConsistentHashShardResolver;
 import org.kurin.routing.shard.KurinShardOperations;
 import org.kurin.routing.shard.KurinShardRouter;
@@ -97,9 +100,13 @@ public class KurinRoutingAutoConfiguration {
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
     public DataSourceHealthMonitor kurinDataSourceHealthMonitor(KurinDataSourceTopology topology, KurinRoutingProperties props,
-                                                                ApplicationEventPublisher events) {
+                                                                ApplicationEventPublisher events, ObjectProvider<NodeProbe> probes) {
         KurinRoutingProperties.Health health = props.getHealth();
-        DataSourceHealthMonitor monitor = new DataSourceHealthMonitor(health.getInterval(), health.getTimeout(), health.getRecoveryThreshold());
+        // A probe of the application comes first; otherwise the property chooses between the two built-in ones
+        NodeProbe probe = probes.getIfAvailable(() ->
+                health.getProbe() == KurinRoutingProperties.Health.Probe.POOL ? new PoolNodeProbe() : new DriverNodeProbe());
+        DataSourceHealthMonitor monitor = new DataSourceHealthMonitor(health.getInterval(), health.getTimeout(),
+                health.getFailureThreshold(), health.getRecoveryThreshold(), probe);
         topology.shards().forEach((name, shard) -> {
             monitor.register(name, DataSourceType.PRIMARY, shard.primary());
             if (shard.replica() != null) {

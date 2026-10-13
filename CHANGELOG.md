@@ -37,8 +37,24 @@ the tests that failed on 1.1.1 and pass now.
   stops the startup and names the bean, the method and the attribute.
   Test: `DurationPlaceholderTest`.
 
+- **Under load a database node was reported DOWN although the database worked.** The periodic check borrowed its
+  connection from the application's pool and failed when the pool was exhausted, and a request that timed out
+  waiting for the pool marked the node down as well. Reads then moved to the primary and the metrics showed a
+  replica outage that had not happened. Now a failure is classified (`ConnectionFailureClassifier`): a pool
+  without a free connection leaves the node up and is counted in `kurin.routing.pool.exhausted`; the request
+  fails with the pool's exception and is not moved to the primary. The check uses a connection of its own
+  (`DriverNodeProbe`, `kurin.routing.health.probe`), and a node goes out after
+  `kurin.routing.health.failure-threshold` failed checks in a row (default 2) instead of one. A request that
+  really cannot connect still takes the node out at once.
+  Tests: `ExhaustedPoolIsNotADeadNodeTest`, `ConnectionFailureClassifierTest`, `HealthMonitorTest`,
+  `NodeProbeTest`, `PoolExhaustionRoutingTest`, `NodeHealthSettingsTest`, `PostgresNodeHealthTest` (PostgreSQL in
+  a container).
+
 ### Added
 
+- `NodeProbe` (SPI of the node health check) with `DriverNodeProbe` and `PoolNodeProbe`; meters
+  `kurin.routing.pool.exhausted{shard,role}` and `kurin.routing.node.transitions{shard,role,to}`; `failureKind`
+  in the health details of a node that is down.
 - `KurinNode.commandPath()` and the detail `commandPath` (`UP`, `CONNECTING`, `DOWN`) of the `kurin` health and
   of `/actuator/kurin`: whether what this node submits can reach the leader. The health status is unchanged.
 - Meters `kurin.locks.acquire{result="unknown"}`, `kurin.locks.release.unconfirmed`,

@@ -740,7 +740,7 @@ run against the code of 1.1.1; what it reported there is recorded below, then th
 | 1 | `KurinLockManager`: "unknown" is not "busy" | done |
 | 2 | Transport: the reconnection pause blocks forwarding to the leader | done |
 | 3 | `@KurinLeaderTask`: placeholders in `interval` | done |
-| 4 | `DataSourceHealthMonitor`: false DOWN under load | pending |
+| 4 | `DataSourceHealthMonitor`: false DOWN under load | done |
 | 5 | Release 1.1.2 | pending |
 
 ## 1.1.2, phase 1: "unknown" is not "busy"
@@ -949,3 +949,115 @@ and the contexts that should fail did so with that message instead of one that n
 - **Values are read once, at startup.** A property that changes at run time does not change a registered task.
 - The name of the bean was added to all messages of the startup checks of this registry, not only to the new
   ones, since the spec asks for it and the old messages had only the class and the method.
+
+## 1.1.2, phase 4: `DataSourceHealthMonitor` took load for an outage
+
+### The defect, reproduced on 1.1.1
+
+Two paths led from an exhausted connection pool to a node marked DOWN, and from there to reads moved to the
+primary and `replica-down` in the metrics:
+
+- the periodic check borrowed its connection from the pool of the application, waited for the pool's timeout
+  and failed;
+- `reportFailure`, called by the router for a request that got no connection, marked the node down for any
+  failure, the pool's own timeout included.
+
+Tests that use only what 1.1.1 offers, run on its code, with real HikariCP pools of one connection that the test
+holds:
+
+| Test | Result on 1.1.1 |
+|---|---|
+| `ExhaustedPoolIsNotADeadNodeTest.requestThatTimedOutWaitingForThePoolDoesNotMarkTheNodeDown` | `[a pool without a free connection belongs to a node that works] Expecting value to be true but was false` |
+| `ExhaustedPoolIsNotADeadNodeTest.periodicCheckDoesNotMarkTheNodeDownWhileTheApplicationHoldsEveryConnection` | `[the check must not depend on a free connection in the pool of the application] Expecting value to be true but was false` |
+| `PoolExhaustionRoutingTest.readThatFindsTheReplicaPoolExhaustedFailsAndTheReplicaStaysInUse` | `[the read is not quietly moved to the primary] Expecting actual not to be null`: the read was answered by the primary and the replica marked down |
+| `PoolExhaustionRoutingTest.writeThatFindsThePrimaryPoolExhaustedFailsWithThePoolTimeoutNotWithPrimaryUnavailable` | failed: the write got `KurinPrimaryUnavailableException` and the primary was marked down |
+| `PoolExhaustionRoutingTest.replicaThatReallyCannotBeConnectedToIsStillTakenOutAtOnce` | passed: behaviour that must stay |
+
+A first run of the periodic-check test gave no verdict on 1.1.1: it failed in its own setup, because the first
+connection of a fresh HikariCP pool took longer on a cold JVM than the 250 ms the pool was told to wait. The
+pools of all new tests now wait for their first connection before the test begins; the table shows the run
+after that correction.
+
+### Done
+
+- **`ConnectionFailureClassifier`** (`kurin-data-routing`, no dependency on any pool or driver) sorts a failure
+  into `CONNECTION_FAILED` (SQLState class 08, `SQLNonTransientConnectionException`, socket failures, unknown
+  host), `AUTHENTICATION_FAILED` (class 28, `SQLInvalidAuthorizationSpecException`), `POOL_EXHAUSTED` and
+  `UNKNOWN`. It walks the causes and the exceptions chained with `setNextException`; a sign of trouble with the
+  node wins wherever it sits, which is how a HikariCP timeout caused by failed creation (the last failure is its
+  cause, the SQLState is copied) is told from a HikariCP timeout of a busy pool (no cause, no state). Pool
+  timeouts recognised: HikariCP, Tomcat JDBC (by class name), Commons Pool behind DBCP (by its message).
+  Everything unrecognised is `UNKNOWN` and counts against the node, as before.
+- **`reportFailure` / `reportConnectionFailure`** mark a node down only for a failure that lies with the node.
+  `POOL_EXHAUSTED` is reported to `Listener.onPoolExhausted`, counted as
+  `kurin.routing.pool.exhausted{shard,role}` and logged at DEBUG. `reportConnectionFailure` returns the verdict;
+  the router uses it: for an exhausted pool it rethrows what the pool threw, without falling back to the primary
+  and without `KurinPrimaryUnavailableException`.
+- **`NodeProbe`**, the SPI of the periodic check, with two implementations. `DriverNodeProbe` (default) keeps
+  one connection per node, opened with `DriverManager` from the URL and credentials of the node's data source,
+  and never touches the pool. `PoolNodeProbe` is the behaviour of 1.1.1. A check through the pool that finds it
+  exhausted changes nothing in either direction. The starter takes a `NodeProbe` bean if there is one.
+- **Hysteresis**: `failureThreshold` (default 2) failed checks in a row take a node out; the request path is
+  immediate as before; `recoveryThreshold` is unchanged.
+- **Meters and details**: `kurin.routing.node.transitions{shard,role,to}`, `kurin.routing.pool.exhausted`;
+  `kurin.routing.node.up` existed. Health details of a node that is down carry `failureKind` next to `failure`
+  (`KurinRoutingHealth.NodeHealth` got a sixth component; the five-argument constructor remains).
+- **Properties**: `kurin.routing.health.failure-threshold`, `kurin.routing.health.probe=driver|pool`. The
+  metadata for IDEs is generated by the configuration processor from the Javadoc of the fields; a test reads the
+  generated file.
+- Tests: `ConnectionFailureClassifierTest` (16), `HealthMonitorTest` (11), `NodeProbeTest` (17),
+  `ExhaustedPoolIsNotADeadNodeTest` (2) in `kurin-data-routing`; `PoolExhaustionRoutingTest` (3),
+  `NodeHealthSettingsTest` (5), `PostgresNodeHealthTest` (2) in the starter.
+
+### How the tests get real failures
+
+- **Exhausted pools are real**: HikariCP and Tomcat JDBC pools of one connection on H2, Commons Pool's own
+  `GenericObjectPool` for the exception DBCP wraps.
+- **"Nobody there" is real**: the PostgreSQL driver against a closed local port and against a host name under
+  `.invalid`, alone and behind HikariCP and Tomcat JDBC. No server is needed for a connection to be refused.
+- **What only a server can say** (wrong password, too many clients, starting up) is built the way the driver
+  builds it, from the `ErrorResponse` text with its SQLState (`new PSQLException(new ServerErrorMessage(...))`);
+  the wrong password is also obtained from a real server in `PostgresNodeHealthTest`.
+- **A node that goes away and comes back** is an H2 TCP server on a local port in `NodeProbeTest`, and a
+  PostgreSQL 16 container in `PostgresNodeHealthTest`: bound to a fixed host port, stopped and started as a
+  container, so that it returns at the same address.
+
+### Decisions and deviations
+
+- **Docker is available on the machine now** (it was not during 1.1.1), so the integration test the spec asks
+  for runs against PostgreSQL in Testcontainers. Only the core artifact `org.testcontainers:testcontainers` and
+  `GenericContainer` are used: the PostgreSQL module and the JUnit extension have different coordinates in
+  Testcontainers 1.x (Spring Boot 3) and 2.x (Spring Boot 4), the core has the same in both. The test is skipped,
+  not failed, where Docker is absent.
+- **A kept connection per node instead of a new one per check**, as the spec allows; the reasons are in the
+  Javadoc of `DriverNodeProbe`. In short: a new connection per check fails when the database is at its
+  connection limit, which is the overloaded and healthy node the probe is there to recognise.
+- **The connection parameters are read from the data source, not from the configuration of the starter.** The
+  spec assumes the starter knows URL, user and password; it does not, the application hands it finished
+  `DataSource` objects in a `KurinDataSourceTopology`. `ConnectionParameters.of` reads the getters that pools
+  have (`getJdbcUrl`/`getUrl`, `getUsername`/`getUserName`/`getUser`, `getPassword`; for Tomcat JDBC the object
+  behind `getPoolProperties()`, because its own `getPassword()` returns a notice instead of the password).
+- **A safety net that the spec does not ask for.** A probe that connects by itself can be wrong where the pool
+  is right: properties set on the pool and absent from the URL, credentials from elsewhere, a driver that
+  `DriverManager` cannot see. A default that then marked a healthy node down would be worse than the defect. So:
+  no registered driver for the URL means the pool is used; and as long as the probe's own connection has never
+  worked, a failure of it is checked against the pool. If the pool works, the node is handed over to the pool
+  probe with a warning; if the pool is merely busy, the check counts for nothing; only if both fail is it a
+  failed check.
+- **Time limit of a check without driver-specific properties.** JDBC has no portable connect timeout, and
+  `DriverManager.setLoginTimeout` is global. The check runs on a thread per node and is abandoned after the
+  timeout, its connection aborted.
+- **A pool timeout is not answered by a fallback to the primary.** The spec names the consequence (reads move to
+  the primary under load) and asks only that the node stay UP. With the node UP the old code would still have
+  sent that one read to the primary; it now fails like any request on a saturated pool.
+- **Bound on detection.** The spec gives `interval * failureThreshold + validationTimeout`. That holds when a
+  dead node refuses connections, which is what the container test measures. A node that swallows packets makes
+  every check take the full timeout, so the general bound is `failureThreshold * (interval + timeout)`; the
+  READMEs state both.
+- **The three-argument constructor of `DataSourceHealthMonitor`** now means "failure threshold 2,
+  `DriverNodeProbe`", the same defaults as the starter. Library users who want the old check pass
+  `new PoolNodeProbe()` and a threshold of 1 to the new constructor.
+- **Pools the classifier does not know** (c3p0, Agroal, UCP, ...) keep the behaviour of 1.1.1 on the request
+  path: their timeout is `UNKNOWN` and takes the node down, and the checks, which no longer use the pool, bring
+  it back after `recoveryThreshold` rounds. c3p0 was left out because it cannot be tested on both Spring Boot
+  generations: Spring Boot 4 does not manage its version.

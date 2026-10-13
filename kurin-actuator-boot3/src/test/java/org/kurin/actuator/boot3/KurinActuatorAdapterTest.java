@@ -226,7 +226,9 @@ class KurinActuatorAdapterTest {
                         DataSourceHealthContributorAutoConfiguration.class))
                 .withBean(KurinDataSourceTopology.class, databases::twoShards)
                 // The periodic check is replaced by explicit ones, so the test decides when the monitor looks
-                .withPropertyValues("kurin.routing.health.interval=1h", "kurin.routing.health.recovery-threshold=1");
+                // One check decides in either direction: these tests are about what is reported, not about when
+                .withPropertyValues("kurin.routing.health.interval=1h", "kurin.routing.health.failure-threshold=1",
+                        "kurin.routing.health.recovery-threshold=1");
     }
 
     private static Map<String, Health> components(HealthContributor composite) {
@@ -259,7 +261,9 @@ class KurinActuatorAdapterTest {
             monitor.checkAll();
             Health replica = components(db).get("eu.replica");
             assertThat(replica.getStatus()).isEqualTo(Status.UP);
-            assertThat(replica.getDetails()).containsEntry("state", "DOWN").containsEntry("degraded", true);
+            assertThat(replica.getDetails()).containsEntry("state", "DOWN").containsEntry("degraded", true)
+                    // What the failure was taken for; an unrecognised one counts against the node
+                    .containsEntry("failureKind", "UNKNOWN");
             assertThat(String.valueOf(replica.getDetails().get("failure"))).contains("Connection refused");
             assertThat(components(db).get("eu.primary").getDetails()).containsEntry("state", "UP").doesNotContainKey("degraded");
             assertThat(routing.health().getStatus()).isEqualTo(Status.UP);

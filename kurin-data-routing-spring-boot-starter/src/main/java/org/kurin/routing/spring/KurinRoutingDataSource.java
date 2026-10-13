@@ -8,6 +8,7 @@ import org.kurin.routing.KurinRoutingContext;
 import org.kurin.routing.KurinRoutingException;
 import org.kurin.routing.consistency.ConsistencyTokenStrategy;
 import org.kurin.routing.consistency.KurinConsistency;
+import org.kurin.routing.health.ConnectionFailureClassifier.FailureKind;
 import org.kurin.routing.health.DataSourceHealthMonitor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -259,8 +260,16 @@ public class KurinRoutingDataSource extends AbstractDataSource {
             listeners.forEach(listener -> listener.onConnection(route.shard(), route.role()));
             return connection;
         } catch (SQLException | RuntimeException e) {
-            // Passive health check: the node is not used again until the monitor sees it working
-            health.reportFailure(route.shard(), route.role(), e);
+            // Passive health check: a node that could not be connected to is not used again until the monitor
+            // sees it working
+            FailureKind kind = health.reportConnectionFailure(route.shard(), route.role(), e);
+            if (!kind.nodeUnavailable()) {
+                // The pool had no free connection in time. The node is in order and so is the route: handing a read
+                // of a busy replica to the primary would only move the load there. The caller gets what a
+                // saturated pool gives anyone.
+                log.debug("The pool of the {} of shard '{}' has no free connection: {}", route.role(), route.shard(), e.toString());
+                throw e;
+            }
             if (route.role() == DataSourceType.REPLICA && replicaFallback == KurinRoutingProperties.ReplicaFallback.PRIMARY
                     && health.isUp(route.shard(), DataSourceType.PRIMARY)) {
                 log.debug("Replica of shard '{}' refused a connection, reading from the primary: {}", route.shard(), e.toString());

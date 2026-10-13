@@ -26,13 +26,21 @@ public record KurinRoutingHealth(Status status, boolean degraded, Map<String, No
     }
 
     /**
-     * @param failure  why the node is down, null while it is up
-     * @param blocking true if the node is a primary that is down while the application cannot work without its
-     *                 primaries; a node that is down and not blocking only degrades the service
+     * @param failure     why the node is down, null while it is up
+     * @param blocking    true if the node is a primary that is down while the application cannot work without its
+     *                    primaries; a node that is down and not blocking only degrades the service
+     * @param failureKind what the failure that took the node down was taken for, as a name of
+     *                    {@link ConnectionFailureClassifier.FailureKind}; null while the node is up
      */
-    public record NodeHealth(String shard, DataSourceType role, boolean up, String failure, boolean blocking) {
+    public record NodeHealth(String shard, DataSourceType role, boolean up, String failure, boolean blocking, String failureKind) {
+
+        public NodeHealth(String shard, DataSourceType role, boolean up, String failure, boolean blocking) {
+            this(shard, role, up, failure, blocking, null);
+        }
+
         /**
-         * @return shard, role, state and, for a node that is down, the reason and whether the service is only degraded
+         * @return shard, role, state and, for a node that is down, the reason, its kind and whether the service
+         * is only degraded
          */
         public Map<String, Object> details() {
             Map<String, Object> details = new LinkedHashMap<>();
@@ -42,6 +50,9 @@ public record KurinRoutingHealth(Status status, boolean degraded, Map<String, No
             if (!up) {
                 details.put("degraded", !blocking);
                 details.put("failure", String.valueOf(failure));
+                if (failureKind != null) {
+                    details.put("failureKind", failureKind);
+                }
             }
             return details;
         }
@@ -64,9 +75,10 @@ public record KurinRoutingHealth(Status status, boolean degraded, Map<String, No
                     continue;
                 }
                 boolean up = monitor.isUp(name, role);
+                ConnectionFailureClassifier.FailureKind kind = monitor.failureKindOf(name, role);
                 nodes.put(name + "." + role.name().toLowerCase(java.util.Locale.ROOT),
                         new NodeHealth(name, role, up, monitor.failureOf(name, role),
-                                !up && role == DataSourceType.PRIMARY && primaryRequired));
+                                !up && role == DataSourceType.PRIMARY && primaryRequired, kind != null ? kind.name() : null));
                 anyDown |= !up;
                 primaryDown |= !up && role == DataSourceType.PRIMARY;
             }

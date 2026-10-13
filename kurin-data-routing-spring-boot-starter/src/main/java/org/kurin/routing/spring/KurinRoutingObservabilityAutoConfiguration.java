@@ -19,7 +19,8 @@ import java.util.concurrent.TimeUnit;
  * Optional metrics of data routing. Its health indicators live in the Actuator adapter modules.
  * <p>
  * Meters: {@code kurin.routing.connections{shard,role}} (also the per-shard request count),
- * {@code kurin.routing.node.up{shard,role}}, {@code kurin.routing.fallbacks{shard,reason}},
+ * {@code kurin.routing.node.up{shard,role}}, {@code kurin.routing.node.transitions{shard,role,to}},
+ * {@code kurin.routing.pool.exhausted{shard,role}}, {@code kurin.routing.fallbacks{shard,reason}},
  * {@code kurin.routing.fanout.duration}, {@code kurin.routing.fanout.failed.shards}.
  */
 @AutoConfiguration(after = KurinRoutingAutoConfiguration.class, afterName = {
@@ -74,6 +75,18 @@ public class KurinRoutingObservabilityAutoConfiguration {
                             Gauge.builder("kurin.routing.node.up", health, monitor -> monitor.isUp(name, role) ? 1 : 0)
                                     .tag("shard", name).tag("role", role.name()).register(registry);
                         }
+                    }
+                });
+                health.addListener(new DataSourceHealthMonitor.Listener() {
+                    @Override
+                    public void onStateChange(DataSourceHealthMonitor.NodeId node, boolean up, String reason) {
+                        registry.counter("kurin.routing.node.transitions", "shard", node.shard(), "role", node.role().name(),
+                                "to", up ? "up" : "down").increment();
+                    }
+
+                    @Override
+                    public void onPoolExhausted(DataSourceHealthMonitor.NodeId node, Throwable error) {
+                        registry.counter("kurin.routing.pool.exhausted", "shard", node.shard(), "role", node.role().name()).increment();
                     }
                 });
                 operations.addListener((shards, failed, duration) -> {

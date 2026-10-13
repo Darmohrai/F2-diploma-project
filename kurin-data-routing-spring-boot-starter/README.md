@@ -45,6 +45,10 @@ First match wins:
 Then health: a read whose replica is down goes to the primary (`replica-fallback=PRIMARY`) or fails (`FAIL`);
 anything that needs a dead primary fails at once with `KurinPrimaryUnavailableException`.
 
+A pool that has no free connection is not a dead node. A request that times out waiting for a pool fails with the
+exception of the pool, as on any saturated pool: the read is not moved to the primary, the node is not marked
+down, and a write does not get `KurinPrimaryUnavailableException`. See [Node health](#node-health).
+
 The annotations work on methods and classes, are inherited from interfaces, and take effect before the
 transaction starts. Calls inside one object bypass them, as with any Spring AOP annotation.
 
@@ -161,6 +165,52 @@ ShardResults<Integer> deleted = shardOperations.executeOnAllShards(shard -> tran
         jdbc.update("delete from sessions where expires_at < ?", cutoff)));
 ```
 
+## Node health
+
+Every node (the primary and the replica of every shard) is checked every `kurin.routing.health.interval`.
+
+| Property | Default | Meaning |
+|---|---|---|
+| `kurin.routing.health.enabled` | `true` | Run the periodic checks. Without them only failed requests take a node out, and nothing brings it back. |
+| `kurin.routing.health.interval` | `5s` | Time between checks. |
+| `kurin.routing.health.timeout` | `1s` | Longest time one check may take. |
+| `kurin.routing.health.failure-threshold` | `2` | Failed checks in a row that take a node out. One failed check does nothing. |
+| `kurin.routing.health.recovery-threshold` | `2` | Good checks in a row that bring it back. |
+| `kurin.routing.health.probe` | `driver` | `driver`: the check has a connection of its own to each node, opened through the JDBC driver with the URL and credentials of the node's data source; it never waits for the pool of the application. `pool`: every check borrows a connection from that pool. |
+| `kurin.routing.health.primary-required` | `false` | Report `OUT_OF_SERVICE` when a primary is down. |
+
+What takes a node out, and what does not:
+
+- A request that cannot connect (connection refused, unknown host, SQLState class `08`, rejected credentials, a
+  pool that timed out because it could not create connections) takes the node out **at once**.
+- `failure-threshold` failed checks in a row take it out. With the defaults a node that refuses connections is
+  out within about 10 s without any request hitting it; in general within `failure-threshold * (interval +
+  timeout)`.
+- **A pool without a free connection takes nothing out.** The timeout of HikariCP, Tomcat JDBC or DBCP waiting
+  for a free connection is counted in `kurin.routing.pool.exhausted` and logged at DEBUG. If that counter grows,
+  the pool is too small for the load or connections are held too long; the database is not the problem.
+
+With `probe=driver` each instance holds one extra connection per node. The parameters are read from the data
+source (`getJdbcUrl()` / `getUrl()`, `getUsername()`, `getPassword()`); HikariCP, Tomcat JDBC and DBCP expose
+them. For a data source that does not, the node is checked through the pool and a warning is logged at startup:
+
+```
+Database node eu/REPLICA is checked through the connection pool of the application: its data source (...)
+does not tell how to connect to it. Such a check competes with the application for connections ...
+```
+
+The same fallback applies, with its own warning, when the connection of the check has never worked although
+the pool does, for example because the pool sets properties that are not in the URL. To check differently,
+declare a bean; it replaces the built-in probes:
+
+```java
+@Bean
+NodeProbe nodeProbe() {
+    return new DriverNodeProbe((node, dataSource) ->
+            Optional.of(new ConnectionParameters(urlOf(node), "health", healthPassword)));
+}
+```
+
 ## Events, health, metrics
 
 `KurinPrimaryDownEvent`, `KurinPrimaryUpEvent`, `KurinReplicaDownEvent`, `KurinReplicaUpEvent` are published on
@@ -169,14 +219,17 @@ transitions.
 Health, with [kurin-actuator-boot3](../kurin-actuator-boot3/README.md) or
 [kurin-actuator-boot4](../kurin-actuator-boot4/README.md): `kurinRouting` is `UP` with `degraded: true` while any node
 is down, and `OUT_OF_SERVICE` only when a primary is down and `kurin.routing.health.primary-required=true`; `db`
-lists the physical pools instead of the routing data source. The bean `KurinRoutingDiagnostics` gives the same
-facts to code.
+lists the physical pools instead of the routing data source. A node that is down carries `failure`, the message of
+what took it down, and `failureKind`, what that was taken for: `CONNECTION_FAILED`, `AUTHENTICATION_FAILED` or
+`UNKNOWN`. The bean `KurinRoutingDiagnostics` gives the same facts to code.
 
 | Meter | Type | Tags |
 |---|---|---|
 | `kurin.routing.connections` | counter | `shard`, `role` |
 | `kurin.routing.fallbacks` | counter | `shard`, `reason` |
 | `kurin.routing.node.up` | gauge 0/1 | `shard`, `role` |
+| `kurin.routing.node.transitions` | counter: changes of a node between usable and not | `shard`, `role`, `to` = `up`, `down` |
+| `kurin.routing.pool.exhausted` | counter: requests and checks that got no connection from a pool in time; the node stays up | `shard`, `role` |
 | `kurin.routing.replica.lag` | gauge: positions behind the primary; only with a `ReplicaPositionProbe` | `shard` |
 | `kurin.routing.fanout.duration` | timer | |
 | `kurin.routing.fanout.failed.shards` | counter | |
