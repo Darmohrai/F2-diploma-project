@@ -30,7 +30,8 @@ import java.util.concurrent.TimeUnit;
         "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
         "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration",
         "org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration",
-        })
+        "org.springframework.boot.actuate.autoconfigure.observation.ObservationAutoConfiguration",
+        "org.springframework.boot.micrometer.observation.autoconfigure.ObservationAutoConfiguration"})
 @ConditionalOnBean(KurinRoutingDataSource.class)
 public class KurinRoutingObservabilityAutoConfiguration {
 
@@ -83,4 +84,16 @@ public class KurinRoutingObservabilityAutoConfiguration {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.micrometer.observation.ObservationRegistry")
+    @ConditionalOnBean(type = "io.micrometer.observation.ObservationRegistry")
+    static class TracingConfiguration {
+        /**
+         * Observation {@code kurin.routing.fanout} with a child {@code kurin.routing.fanout.shard} per shard.
+         */
+        @Bean
+        InitializingBean kurinRoutingFanOutObservation(io.micrometer.observation.ObservationRegistry registry, KurinShardOperations operations) {
+            return () -> operations.setInstrumentation(new ObservationFanOutInstrumentation(registry));
+        }
+    }
 }

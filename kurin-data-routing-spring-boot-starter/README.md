@@ -181,6 +181,10 @@ facts to code.
 | `kurin.routing.fanout.duration` | timer | |
 | `kurin.routing.fanout.failed.shards` | counter | |
 
+With an `ObservationRegistry`: observation `kurin.routing.fanout` (tags `shards`, `failed`) for a call of
+`executeOnAllShards`, in the trace of the caller, and a child `kurin.routing.fanout.shard` (tag `shard`) for the work
+on each shard, current on the thread that does it.
+
 ## Configuration
 
 `kurin.routing.*`: see the [configuration reference](../README.md#configuration-reference).

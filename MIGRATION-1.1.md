@@ -366,3 +366,5 @@ Kurin 1.1.1 runs on Spring Boot 3.2 - 3.5 and on Spring Boot 4.x with the same j
 - Tests that build a context with `ApplicationContextRunner` never get an `ApplicationReadyEvent`: such a context
   stays in its startup phase. Set `kurin.routing.unrouted.mode=fail`, or call `KurinRoutingStartup.finish()`, where
   a test relies on access without a shard being refused.
+- New observation `kurin.routing.fanout` with a child `kurin.routing.fanout.shard` per shard, when an
+  `ObservationRegistry` bean exists. `KurinShardOperations` has a new hook, `setInstrumentation`.

@@ -416,6 +416,72 @@ class RoutingIntegrationTest {
         });
     }
 
+    // 1.1.1, section 5.2
+    @Test
+    void fanOutIsObservedWithAChildPerShardInTheTraceOfTheCaller() {
+        record Observed(String name, String tags, io.micrometer.observation.ObservationView parent, boolean failed) {
+        }
+        List<Observed> observed = new CopyOnWriteArrayList<>();
+        io.micrometer.observation.ObservationRegistry registry = io.micrometer.observation.ObservationRegistry.create();
+        registry.observationConfig().observationHandler(new io.micrometer.observation.ObservationHandler<io.micrometer.observation.Observation.Context>() {
+            @Override
+            public void onStop(io.micrometer.observation.Observation.Context context) {
+                observed.add(new Observed(context.getName(), context.getLowCardinalityKeyValues().toString(),
+                        context.getParentObservation(), context.getError() != null));
+            }
+
+            @Override
+            public boolean supportsContext(io.micrometer.observation.Observation.Context context) {
+                return true;
+            }
+        });
+
+        Databases databases = new Databases();
+        runner(databases.sharded())
+                .withConfiguration(AutoConfigurations.of(KurinRoutingObservabilityAutoConfiguration.class))
+                .withBean(io.micrometer.observation.ObservationRegistry.class, () -> registry)
+                .run(context -> {
+                    KurinShardOperations operations = context.getBean(KurinShardOperations.class);
+                    Items items = context.getBean(Items.class);
+
+                    io.micrometer.observation.Observation request = io.micrometer.observation.Observation.start("request", registry);
+                    AtomicReference<io.micrometer.observation.Observation> seenInTask = new AtomicReference<>();
+                    try (io.micrometer.observation.Observation.Scope scope = request.openScope()) {
+                        operations.executeOnAllShards(shard -> {
+                            seenInTask.set(registry.getCurrentObservation());
+                            return items.eventualRead();
+                        });
+                    } finally {
+                        request.stop();
+                    }
+
+                    Observed fanOut = observed.stream().filter(o -> o.name().equals("kurin.routing.fanout")).findFirst().orElseThrow();
+                    assertThat(fanOut.tags()).contains("shards", "2").contains("failed", "0");
+                    // The fan-out belongs to the trace of whoever started it
+                    assertThat(fanOut.parent().getContextView().getName()).isEqualTo("request");
+                    List<Observed> perShard = observed.stream().filter(o -> o.name().equals("kurin.routing.fanout.shard")).toList();
+                    assertThat(perShard).hasSize(2).allSatisfy(shard -> {
+                        assertThat(shard.parent().getContextView().getName()).isEqualTo("kurin.routing.fanout");
+                        assertThat(shard.failed()).isFalse();
+                    });
+                    assertThat(perShard.stream().map(Observed::tags).toList().toString()).contains("A").contains("B");
+                    // Inside the callback the span of the shard is current, on the pool thread
+                    assertThat(seenInTask.get().getContextView().getName()).isEqualTo("kurin.routing.fanout.shard");
+
+                    // A failing shard is counted on the fan-out and marked on its own span
+                    observed.clear();
+                    operations.executeOnAllShards(shard -> {
+                        if (shard.equals("B")) {
+                            throw new IllegalStateException("shard B is broken");
+                        }
+                        return shard;
+                    }, KurinShardOperations.FanOutOptions.defaults().failurePolicy(KurinShardOperations.FailurePolicy.COLLECT));
+                    assertThat(observed.stream().filter(o -> o.name().equals("kurin.routing.fanout")).findFirst().orElseThrow().tags())
+                            .contains("failed", "1");
+                    assertThat(observed.stream().filter(o -> o.name().equals("kurin.routing.fanout.shard")).filter(Observed::failed)).hasSize(1);
+                });
+    }
+
     // Spec test 29
     @Test
     void secondShardInsideATransactionIsRefused() {

@@ -144,9 +144,56 @@ public class KurinShardOperations implements AutoCloseable {
         void onFanOut(int shards, int failed, Duration duration);
     }
 
+    /**
+     * Lets a tracing system follow a fan-out: one span for the whole call and one for the work on each shard,
+     * which runs on another thread. Implementations must not throw.
+     */
+    public interface FanOutInstrumentation {
+        FanOutInstrumentation NOOP = shards -> new FanOutSpan() {
+            @Override
+            public ShardSpan shard(String shard) {
+                return error -> {
+                };
+            }
+
+            @Override
+            public void end(int failed) {
+            }
+        };
+
+        /**
+         * Called on the calling thread when a fan-out begins.
+         */
+        FanOutSpan start(int shards);
+    }
+
+    public interface FanOutSpan {
+        /**
+         * Called on the thread that is about to work on the shard, with nothing of the caller bound to it yet.
+         */
+        ShardSpan shard(String shard);
+
+        /**
+         * Called on the calling thread when the fan-out is over.
+         *
+         * @param failed number of shards that failed or timed out
+         */
+        void end(int failed);
+    }
+
+    public interface ShardSpan {
+        /**
+         * Called on the thread that worked on the shard, when it is done.
+         *
+         * @param error what the work failed with, or null
+         */
+        void end(Throwable error);
+    }
+
     private final KurinShardRouter router;
     private final ExecutorService executor;
     private final List<FanOutListener> listeners = new ArrayList<>();
+    private volatile FanOutInstrumentation instrumentation = FanOutInstrumentation.NOOP;
 
     /**
      * @param parallelism largest number of shards worked on at the same time, across all concurrent fan-outs
@@ -163,6 +210,10 @@ public class KurinShardOperations implements AutoCloseable {
 
     public void addListener(FanOutListener listener) {
         listeners.add(listener);
+    }
+
+    public void setInstrumentation(FanOutInstrumentation instrumentation) {
+        this.instrumentation = instrumentation != null ? instrumentation : FanOutInstrumentation.NOOP;
     }
 
     /**
@@ -199,6 +250,7 @@ public class KurinShardOperations implements AutoCloseable {
         long startedNanos = System.nanoTime();
         ConsistencyToken callerToken = KurinConsistency.current();
         boolean failFast = options.failurePolicy() == FailurePolicy.FAIL_FAST;
+        FanOutSpan span = instrumentation.start(router.shards().size());
 
         Map<String, CompletableFuture<ShardResult<T>>> outcomes = new LinkedHashMap<>();
         List<Future<?>> tasks = new ArrayList<>();
@@ -209,7 +261,7 @@ public class KurinShardOperations implements AutoCloseable {
             CompletableFuture<ShardResult<T>> outcome = new CompletableFuture<>();
             outcomes.put(shard, outcome);
             tasks.add(executor.submit(() -> {
-                ShardResult<T> result = runOnShard(shard, callback, options, callerToken);
+                ShardResult<T> result = runOnShard(shard, callback, options, callerToken, span);
                 if (!result.succeeded()) {
                     firstFailure.complete(result);
                 }
@@ -243,6 +295,7 @@ public class KurinShardOperations implements AutoCloseable {
 
         int failed = (int) results.values().stream().filter(result -> !result.succeeded()).count();
         notifyListeners(results.size(), failed, startedNanos);
+        span.end(failed);
 
         if (failFast && failed > 0) {
             ShardResult<T> failure = firstFailure.isDone() ? firstFailure.join()
@@ -253,8 +306,11 @@ public class KurinShardOperations implements AutoCloseable {
     }
 
     // Runs on a pool thread: everything bound to the thread is set here and removed here
-    private <T> ShardResult<T> runOnShard(String shard, ShardCallback<T> callback, FanOutOptions options, ConsistencyToken callerToken) {
+    private <T> ShardResult<T> runOnShard(String shard, ShardCallback<T> callback, FanOutOptions options, ConsistencyToken callerToken,
+                                           FanOutSpan fanOut) {
         long startedNanos = System.nanoTime();
+        ShardSpan span = fanOut.shard(shard);
+        Throwable failure = null;
         ConsistencyToken previousToken = KurinConsistency.bind(callerToken);
         try (KurinRoutingContext.Scope shardScope = KurinRoutingContext.shard(shard);
              KurinRoutingContext.Scope readScope = options.readOnly() ? KurinRoutingContext.readOnly(options.consistency()) : () -> {
@@ -262,9 +318,11 @@ public class KurinShardOperations implements AutoCloseable {
             T value = callback.execute(shard);
             return new ShardResult<>(shard, value, null, Duration.ofNanos(System.nanoTime() - startedNanos));
         } catch (Throwable t) {
+            failure = t;
             return new ShardResult<>(shard, null, t, Duration.ofNanos(System.nanoTime() - startedNanos));
         } finally {
             KurinConsistency.restore(previousToken);
+            span.end(failure);
         }
     }
 

@@ -453,7 +453,7 @@ Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review o
 | A | Services without snapshots (section 4), disk failure (section 3) | done |
 | B | Spring Boot 3.2+ and 4.x compatibility, Actuator adapters, integration test modules (section 2) | done |
 | C | Database access outside of a shard, migrations per shard, `db` health, Hibernate (section 1) | done |
-| D | Routing section of `/actuator/kurin`, fan-out observation, `diff` performance (section 5) | pending |
+| D | Routing section of `/actuator/kurin`, fan-out observation, `diff` performance (section 5) | done |
 | E | Stability runs, release 1.1.1 (sections 6 and 7) | pending |
 
 ## 1.1.1, phase A
@@ -639,3 +639,28 @@ lines that pass, and the API Kurin uses did not change inside the 3.x line.
   machine the work was done on, and a test that is skipped proves nothing.
 - **A context that is not started by `SpringApplication` never becomes ready.** `ApplicationContextRunner` and
   hand-made contexts publish no `ApplicationReadyEvent`; `KurinRoutingStartup.finish()` is there for them.
+
+## 1.1.1, phase D
+
+### Done
+
+- **Routing section of `/actuator/kurin`** (5.1): contributed by the adapter modules when both the node starter
+  and the routing starter are present. Content comes from `KurinRoutingDiagnostics.describe()`: shards with
+  weights, the state of every node with the reason of a failure, the replica lag when a `ReplicaPositionProbe` is
+  available, the resolver with virtual nodes and ring weights, consistency strategy, replica fallback.
+- **Observation for fan-out** (5.2): `kurin.routing.fanout` with the tags `shards` and `failed`, in addition to
+  the timer. Each shard task is a child observation `kurin.routing.fanout.shard` with the tag `shard`, started and
+  made current on the pool thread, so the statements run there hang below it. The fan-out observation is
+  started on the calling thread and so continues the trace of the caller. `micrometer-observation` is an
+  optional dependency of the routing starter; the plain module only got the hook
+  `KurinShardOperations.FanOutInstrumentation`.
+- **`ConsistentHashRing.diff` with many virtual nodes** (5.3): `ShardingTest.diffOfLargeRingsIsFast` measures the
+  diff of 3 and 4 shards with 1000 virtual nodes each against a limit of one second. It passed without changes
+  to the implementation.
+
+### Decisions and deviations
+
+- **The child observation has a name of its own**, `kurin.routing.fanout.shard`. The spec names only the parent.
+  Two observations with the same name and different tag sets would produce meters that clash.
+- **The first measured `diff` is the second call.** The first one pays for class loading and compilation, which
+  is not what the limit is about.

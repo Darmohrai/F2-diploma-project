@@ -207,4 +207,22 @@ class ShardingTest {
         KurinConsistency.withToken(token, () ->
                 assertThat(ops.executeOnAllShards(shard -> KurinConsistency.current().position("A")).values()).containsOnly("42"));
     }
+
+    // 1.1.1, section 5.3: planning a resharding must stay cheap with many points on the ring
+    @Test
+    void diffOfLargeRingsIsFast() {
+        ConsistentHashRing three = new ConsistentHashRing(java.util.List.of("A", "B", "C"), 1000);
+        ConsistentHashRing four = new ConsistentHashRing(java.util.List.of("A", "B", "C", "D"), 1000);
+        // Once unmeasured, so that class loading and the first compilation are not what is timed
+        three.diff(four);
+
+        long startedNanos = System.nanoTime();
+        RingDiff diff = three.diff(four);
+        java.time.Duration took = java.time.Duration.ofNanos(System.nanoTime() - startedNanos);
+
+        assertThat(took).isLessThan(java.time.Duration.ofSeconds(1));
+        assertThat(diff.ranges()).isNotEmpty().allSatisfy(range -> assertThat(range.newOwner()).isEqualTo("D"));
+        // The fourth shard takes about a quarter of the key space, and nothing else moves
+        assertThat(diff.movedFraction()).isBetween(0.20, 0.30);
+    }
 }
