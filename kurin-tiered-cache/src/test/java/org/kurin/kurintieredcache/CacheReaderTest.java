@@ -267,11 +267,15 @@ class CacheReaderTest {
         }
         assertThat(events).containsOnly("STALE");
         await().atMost(Duration.ofSeconds(5)).until(() -> loads.get() == 2);
+        // Twenty readers, one refresh: it is still running, so nothing else can have loaded
+        assertThat(loads.get()).isEqualTo(2);
 
         refreshMayFinish.countDown();
+        // The refreshed value lives 150 ms too. A read that comes later than that gets it as a stale value and
+        // starts the next refresh, so the number of loads from here on depends on how fast this thread is and
+        // is not asserted.
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertThat(reader.read(cache, "sku", options, () -> "v" + loads.incrementAndGet())).isEqualTo("v2"));
-        assertThat(loads.get()).isEqualTo(2);
     }
 
     @Test

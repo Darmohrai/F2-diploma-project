@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kurin is a Java 21 infrastructure framework (a university qualification project): an embedded Raft node on
 Netty + Kryo, with locks, leader tasks, run-once jobs, a tiered cache and database routing on top, each exposed
-through a Spring Boot starter. Version 1.1.1. Runs on Spring Boot 3.2 - 3.5 and on 4.x with the same jars.
+through a Spring Boot starter. Version 1.1.2. Runs on Spring Boot 3.2 - 3.5 and on 4.x with the same jars.
 
 - `README.md` and the per-module READMEs state the guarantees and the configuration reference. Keep them true
   when behaviour changes.
-- `PROGRESS.md` records what 1.1.0 and 1.1.1 did per phase and every deliberate deviation, with reasons.
+- `PROGRESS.md` records what 1.1.0, 1.1.1 and 1.1.2 did per phase and every deliberate deviation, with reasons.
   `MIGRATION-1.1.md` lists the breaking changes since 1.0.x, `CHANGELOG.md` the releases.
 - `docs/boot-compatibility.md` is the audit of every Spring Boot and Spring Framework class the modules use, in
   Spring Boot 3.2 and 4.1. Extend it when a starter starts using a new one.

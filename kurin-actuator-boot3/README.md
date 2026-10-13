@@ -8,7 +8,7 @@ against.
 <dependency>
     <groupId>org.kurin</groupId>
     <artifactId>kurin-actuator-boot3</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 </dependency>
 ```
 

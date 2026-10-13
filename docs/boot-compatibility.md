@@ -1,6 +1,6 @@
 # Spring Boot compatibility of Kurin
 
-Kurin 1.1.1 runs on Spring Boot 3.2 and later 3.x and on Spring Boot 4.x. This document records how that was
+Kurin 1.1.2 runs on Spring Boot 3.2 and later 3.x and on Spring Boot 4.x. This document records how that was
 established: which classes of Spring Boot and Spring Framework each module uses, whether they differ between the
 two generations, and what was done where they do.
 
@@ -66,6 +66,8 @@ below was read from the jars of these versions (`jar tf`, `javap`), not from mem
 | `spring-boot-starter-aop` | renamed `spring-boot-starter-aspectj` | starters depend on `spring-aop` + `aspectjweaver` |
 | `spring-boot-starter-web` | `spring-boot-starter-webmvc` (the old name remains as a deprecated alias) | only in the integration test modules, each uses its own |
 | `spring-boot-actuator-autoconfigure` holds the health conditions | health is in `spring-boot-health` | adapter poms |
+| Testcontainers 1.19 (test scope, routing starter) | Testcontainers 2.0: the modules were renamed (`testcontainers-postgresql`, `testcontainers-junit-jupiter`) | the test uses only the core artifact `org.testcontainers:testcontainers` and `GenericContainer`, which are the same in both |
+| HikariCP 5.0, Tomcat JDBC 10.1, Commons Pool 2.12, PostgreSQL driver 42.6 (test scope, `kurin-data-routing`) | HikariCP 7.0, Tomcat JDBC 11.0, Commons Pool 2.13, PostgreSQL driver 42.7 | the failure classifier is tested against the real exceptions of whichever versions the build uses; Commons DBCP itself is not on the test classpath, because Spring Boot 3 excludes its logging dependency |
 | one `spring-boot-autoconfigure` with all autoconfigurations | one module per technology (`spring-boot-jdbc`, `spring-boot-liquibase`, `spring-boot-flyway`, `spring-boot-hibernate`, ...) | nothing in the starters depends on these modules |
 | `liquibase-core` 4.24, Flyway 9.22, Hibernate 6.4 | Liquibase 5.0, Flyway 12.4, Hibernate 7.4 | only API present in both is called: `SpringLiquibase.get/setDataSource`, `afterPropertiesSet`; `Flyway(Configuration)`, `getConfiguration`, `migrate`, `Flyway.configure(ClassLoader).configuration(...).dataSource(...).load()`. Hibernate 6.4 knows only `hibernate.temp.use_jdbc_metadata_defaults`, 7.4 also `hibernate.boot.allow_jdbc_metadata_access`: both are set |
 | Jakarta Servlet 6.0 | 6.1 | filters and response wrappers use only 6.0 API |

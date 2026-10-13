@@ -53,19 +53,19 @@ the repository and the modules you need; the version is the tag.
     <dependency>
         <groupId>com.github.Darmohrai.F2-diploma-project</groupId>
         <artifactId>kurin-locks-spring-boot-starter</artifactId>
-        <version>1.1.1</version>
+        <version>1.1.2</version>
     </dependency>
     <!-- with Actuator: the adapter for your Spring Boot generation -->
     <dependency>
         <groupId>com.github.Darmohrai.F2-diploma-project</groupId>
         <artifactId>kurin-actuator-boot3</artifactId>   <!-- kurin-actuator-boot4 on Spring Boot 4 -->
-        <version>1.1.1</version>
+        <version>1.1.2</version>
     </dependency>
 </dependencies>
 ```
 
 Gradle: `maven { url 'https://jitpack.io' }` and
-`implementation 'com.github.Darmohrai.F2-diploma-project:kurin-locks-spring-boot-starter:1.1.1'`.
+`implementation 'com.github.Darmohrai.F2-diploma-project:kurin-locks-spring-boot-starter:1.1.2'`.
 
 | Artifact | Use it for |
 |---|---|
@@ -85,7 +85,7 @@ Inside this build, and when the modules are installed locally with `./mvnw insta
 <dependency>
     <groupId>com.github.Darmohrai.F2-diploma-project</groupId>
     <artifactId>kurin-locks-spring-boot-starter</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 </dependency>
 ```
 

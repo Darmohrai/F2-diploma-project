@@ -6,7 +6,7 @@
 
     <groupId>org.kurin</groupId>
     <artifactId>kurin-router-parent</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
     <packaging>pom</packaging>
 
     <name>Kurin</name>

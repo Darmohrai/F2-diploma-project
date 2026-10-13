@@ -741,7 +741,7 @@ run against the code of 1.1.1; what it reported there is recorded below, then th
 | 2 | Transport: the reconnection pause blocks forwarding to the leader | done |
 | 3 | `@KurinLeaderTask`: placeholders in `interval` | done |
 | 4 | `DataSourceHealthMonitor`: false DOWN under load | done |
-| 5 | Release 1.1.2 | pending |
+| 5 | Release 1.1.2 | done |
 
 ## 1.1.2, phase 1: "unknown" is not "busy"
 
@@ -1061,3 +1061,85 @@ after that correction.
   path: their timeout is `UNKNOWN` and takes the node down, and the checks, which no longer use the pool, bring
   it back after `recoveryThreshold` rounds. c3p0 was left out because it cannot be tested on both Spring Boot
   generations: Spring Boot 4 does not manage its version.
+
+## 1.1.2, phase 5: release
+
+### Done
+
+- All modules are `1.1.2`. `CHANGELOG.md` has the section 1.1.2 with every fix and the tests that failed on 1.1.1;
+  `MIGRATION-1.1.md` has "1.1.1 → 1.1.2"; the READMEs of the modules that changed, the root README (guarantees of
+  locks, connections between nodes, configuration reference), `CLAUDE.md` and `docs/boot-compatibility.md` are
+  updated.
+- `./mvnw clean install`: green, 295 tests, none skipped (Spring Boot 3.2.12).
+- `./mvnw -Pboot4 clean install`: green, 295 tests, none skipped (Spring Boot 4.1.1, Testcontainers 2.0.5).
+- Every phase was committed after a full `./mvnw -B verify` of exactly that phase, run in a separate git
+  worktree that held the commit of the previous phase plus the staged changes of the phase: 212 tests after
+  phase 1, 233 after phase 2, 239 after phase 3, 295 after phase 4.
+- `jitpack.yml` runs `./mvnw clean install -DskipTests`. A fresh clone of the branch built with exactly that
+  command: all 14 modules, `BUILD SUCCESS`. It was run on this machine (Windows, JDK 23), not on JitPack itself,
+  which uses Linux and the JDK 21 that `jitpack.yml` installs.
+- The repository has no check of the code examples in the READMEs. The examples that were added use only
+  classes and signatures that exist; the lock, placeholder and probe examples correspond to code in the tests
+  (`UnknownOutcomeTest`, `DurationPlaceholderTest`, `NodeProbeTest.parametersCanBeSuppliedForDataSourcesThatDoNotTellThem`).
+- No tag was created or pushed.
+
+### Stability runs
+
+`scripts/stability.sh <modules> 30 [-Dtest=...]`: thirty runs in a row in one test JVM per module with a heap of
+512 MB, stopping at the first failure. Machine: Windows 10, JDK 23, 16 GB of memory of which about 3 GB were
+free, Docker Desktop running.
+
+| Phase | What was run | Runs | Failures |
+|---|---|---|---|
+| 1 | `kurin-locks`, all tests (`KurinLockManagerOutcomeTest`, `LockClusterTest`, `JobAndLeaderClusterTest`) | 30 | 0 |
+| 1, 3 | `kurin-locks-spring-boot-starter`: `UnknownOutcomeTest`, `DurationPlaceholderTest` | 30 | 0 |
+| 1, 2 | `kurin-it-boot3`: `LockOutcomeTest` (two instances; since phase 2 without waiting for the command path) | 30 | 0 |
+| 2 | `kurin-test`: `PeerStartOrderTest` | 30 | 0 |
+| 2, 4 | `core` and `kurin-data-routing`, all tests (`ConnectionManagerTest`, `CommandPathTest`, classifier, monitor, probes) | 30 | 0 |
+| 4 | `kurin-data-routing-spring-boot-starter`: `PoolExhaustionRoutingTest`, `NodeHealthSettingsTest`, `PostgresNodeHealthTest` (PostgreSQL in a container, stopped and started in every run) | 30 | 0 |
+| 2 | `kurin-test`, all tests, after the three delay tests were fixed | 28: the series stops at a failure | 1, in run 28 |
+
+The one failure, in run 28 of the whole `kurin-test` suite, was
+`RaftSafetyTest.returningPartitionedNodeDoesNotRaiseTheClusterTerm`: `Condition ... was not fulfilled within 5
+seconds`. Its log shows two leaders in a row, in a cluster without any injected fault, stepping down with `has not
+heard from a majority for 300 ms`. That test and the code it exercises are not touched by 1.1.2. To see whether
+the transport change of phase 2 could be behind it, two tests of `RaftSafetyTest` in which no leader may step down
+were run 15 times on the code before phase 2 and 15 times after it: no step-down and no failure in either. The
+failure is therefore attributed to a stall of the machine, without proof. A first attempt at this series had
+stopped at run 3, on the delay test described below.
+
+The series were not repeated with `-Pboot4`; on Spring Boot 4 every test ran once, in the full build.
+
+### Tests of earlier versions that turned out to depend on timing
+
+The machine was under more memory pressure than during 1.1.1, and tests that had passed twenty runs in a row then
+failed now. Each was traced to its cause and changed so that the outcome no longer depends on the length of a
+pause; none of the failures was in code that 1.1.2 changes, and no production code was changed for them.
+
+| Test | Failure | Cause | Change |
+|---|---|---|---|
+| `RoutingIntegrationTest.readYourWritesHoldsAcrossTwoInstancesThroughTheToken` | `expected: "primary" but was: "replica"` | a sticky window of 400 ms against a pause between the write and the read | window of 3 s for this test |
+| `RoutingIntegrationTest.annotationsAndTransactionsSelectPrimaryOrReplica` | `expected: "replica" but was: "primary"`, once the window above was longer | relied on a context taking more than 400 ms to start after a write on the same thread | its second context sets a window of 1 ms |
+| `RaftClusterTest.retryWithSameRequestIdAfterTimeoutIsAppliedOnce`, two tests of `LockClusterTest` | `KurinNoLeaderException` | heartbeats delayed by 250 ms (180 ms) against a check-quorum window of 300 ms; 5 failures in 15 runs on the code of phase 1 | election timeouts of 3 to 4 s in these clusters |
+| `CacheReaderTest.staleValueIsServedAtOnceWhileOneRefreshRuns` | `expected: 2 but was: 3` | the refreshed value lives 150 ms; a read that came later started another refresh, and the test counted loads after it | the count is asserted while the one refresh is still running, not after |
+
+The new tests had the same kind of defect twice, found before they were committed: a HikariCP pool told to wait
+250 ms for a connection could not open its first one in that time on a cold JVM (the pools now wait for their
+first connection before a test begins), and a write of an earlier test on the same thread kept the reads of the
+next on the primary through the sticky window (these tests set a window of 1 ms).
+
+### Open points
+
+- **The whole `kurin-test` suite did not pass thirty runs in a row** (see above: 27, then one failure in a test
+  1.1.2 does not touch). The test cluster and every Spring test use election timeouts of 300 to 600 ms, so any
+  stall of the machine longer than 300 ms deposes a leader, and tests that assume a stable leader then fail. This
+  was so in 1.1.1 too; it showed now because the machine was under memory pressure. Raising these timeouts
+  everywhere would make the suites tolerant and slower; it was not done in a release of four fixes.
+- **`@KurinCacheable.ttl` and the other duration attributes of the cache annotations do not take placeholders.**
+  Phase 3 covers the coordination annotations, as the spec says; the cache starter has the same gap.
+- **Pools other than HikariCP, Tomcat JDBC and Commons DBCP** are not recognised by the failure classifier; their
+  timeout still takes a node down on the request path, as in 1.1.1.
+- **The clean-clone build was not run on JitPack**, which only builds a pushed tag.
+- **JitPack coordinates.** The spec and the README use `com.github.Darmohrai.F2-diploma-project`; the `origin` of
+  this working copy is `github.com/Darmohrai/KurinFrame`, for which JitPack would use
+  `com.github.Darmohrai.KurinFrame`. Whoever tags the release should check which repository the tag goes to.
