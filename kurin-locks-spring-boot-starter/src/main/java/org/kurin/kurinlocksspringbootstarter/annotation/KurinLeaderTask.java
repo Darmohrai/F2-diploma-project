@@ -23,7 +23,12 @@ public @interface KurinLeaderTask {
     String name();
 
     /**
-     * Pause between the end of one run and the start of the next, as {@code PT10S} or {@code 10s}.
+     * Pause between the end of one run and the start of the next: an ISO-8601 duration ({@code PT10S}), a simple
+     * one ({@code 10s}) or a number of milliseconds ({@code 10000}), as for {@code @Scheduled(fixedDelayString)}.
+     * <p>
+     * Property placeholders are resolved when the context starts: {@code "${outbox.relay.interval}"}, or with a
+     * default, {@code "${outbox.relay.interval:10s}"}. A placeholder without a value and a value that is not a
+     * duration stop the startup, with the bean, the method and this attribute in the message.
      */
     String interval();
 }

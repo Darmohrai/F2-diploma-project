@@ -426,3 +426,19 @@ Nothing to change in applications. What is observable:
 - The `kurin` health has a new detail, `commandPath` (`UP`, `CONNECTING`, `DOWN`), also available as
   `KurinNode.commandPath()`. The status is computed as before. `CONNECTING` on a follower that forwards nothing is
   normal.
+
+## `@KurinLeaderTask`: `interval` takes property placeholders
+
+Additive. `interval` of `@KurinLeaderTask`, and with it `ttl` and `waitTimeout` of `@KurinDistributedLock` and
+`slot` and `lease` of `@KurinScheduledOnce`, are resolved against the environment when the context starts:
+`"${outbox.relay.interval}"`, `"${outbox.relay.interval:2s}"`. A number without a unit is milliseconds, as for
+`@Scheduled(fixedDelayString)`; `PT2S` and `2s` work as before.
+
+A value that used to be rejected at startup as an unparsable duration is still rejected. What is new is that a
+`${...}` is no longer such a value. A placeholder without a value and without a default stops the startup with
+the bean, the method and the attribute in the message.
+
+If you construct `KurinLocksAspect` yourself, the three-argument constructor still exists and takes the
+attributes as written; pass the `KurinCoordinationRegistry` bean as a fourth argument to have placeholders
+resolved.
+

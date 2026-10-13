@@ -62,15 +62,27 @@ public class KurinLocksAspect {
     private final KurinLockManager lockManager;
     private final KurinJobs jobs;
     private final KurinNode kurinNode;
+    private final KurinCoordinationRegistry registry;
     private final SpelExpressionParser parser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNames = new DefaultParameterNameDiscoverer();
     private final Map<Method, LockPlan> lockPlans = new ConcurrentHashMap<>();
     private final Map<Method, JobPlan> jobPlans = new ConcurrentHashMap<>();
 
+    /**
+     * An aspect that takes the duration attributes of the annotations as written, without resolving placeholders.
+     */
     public KurinLocksAspect(KurinLockManager lockManager, KurinJobs jobs, KurinNode kurinNode) {
+        this(lockManager, jobs, kurinNode, new KurinCoordinationRegistry());
+    }
+
+    /**
+     * @param registry resolves the placeholders in the duration attributes of the annotations
+     */
+    public KurinLocksAspect(KurinLockManager lockManager, KurinJobs jobs, KurinNode kurinNode, KurinCoordinationRegistry registry) {
         this.lockManager = lockManager;
         this.jobs = jobs;
         this.kurinNode = kurinNode;
+        this.registry = registry;
     }
 
     // ---------------------------------------------------------------- @KurinDistributedLock
@@ -106,8 +118,8 @@ public class KurinLocksAspect {
     }
 
     private LockPlan lockPlan(Method method, KurinDistributedLock annotation) {
-        LockOptions options = LockOptions.ttl(KurinCoordinationRegistry.parseDuration(annotation.ttl()))
-                .waitTimeout(KurinCoordinationRegistry.parseDuration(annotation.waitTimeout()))
+        LockOptions options = LockOptions.ttl(registry.resolveDuration(annotation.ttl()))
+                .waitTimeout(registry.resolveDuration(annotation.waitTimeout()))
                 .autoRenew(annotation.autoRenew())
                 .reentrant(annotation.reentrant());
         return new LockPlan(parser.parseExpression(annotation.key()), options, annotation.onBusy(),
@@ -155,8 +167,8 @@ public class KurinLocksAspect {
     public Object handleScheduledOnce(ProceedingJoinPoint joinPoint, KurinScheduledOnce scheduledOnce) throws Throwable {
         Method method = targetMethod(joinPoint);
         JobPlan plan = jobPlans.computeIfAbsent(method, m -> new JobPlan(scheduledOnce.name(),
-                KurinCoordinationRegistry.parseDuration(scheduledOnce.slot()),
-                KurinCoordinationRegistry.parseDuration(scheduledOnce.lease())));
+                registry.resolveDuration(scheduledOnce.slot()),
+                registry.resolveDuration(scheduledOnce.lease())));
 
         Optional<Object> result = proceedUnwrapping(() ->
                 jobs.runOnce(plan.name(), plan.slot(), scheduledOnce.mode(), plan.lease(), () -> proceedWrapping(joinPoint)));

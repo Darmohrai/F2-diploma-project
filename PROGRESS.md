@@ -739,7 +739,7 @@ run against the code of 1.1.1; what it reported there is recorded below, then th
 |-------|-------|--------|
 | 1 | `KurinLockManager`: "unknown" is not "busy" | done |
 | 2 | Transport: the reconnection pause blocks forwarding to the leader | done |
-| 3 | `@KurinLeaderTask`: placeholders in `interval` | pending |
+| 3 | `@KurinLeaderTask`: placeholders in `interval` | done |
 | 4 | `DataSourceHealthMonitor`: false DOWN under load | pending |
 | 5 | Release 1.1.2 | pending |
 
@@ -900,3 +900,52 @@ fix let the first node connect. A run "before the fix" that passed ten times tur
   in 5 of 15 runs on the code of phase 1, before anything in the transport was changed, with
   `KurinNoLeaderException` after `Leader ... has not heard from a majority for 300 ms. Stepping down.` The
   clusters of these three tests now use election timeouts of 3 to 4 s; after that the test passed 10 of 10.
+
+## 1.1.2, phase 3: placeholders in `@KurinLeaderTask.interval`
+
+### The defect, reproduced on 1.1.1
+
+`interval` is a string and was handed to `DurationStyle.detectAndParse` as written, so `"${...}"` was an invalid
+duration and stopped the startup. `DurationPlaceholderTest` (without its one test of the new method
+`resolveDuration`), run on the code of 1.1.1: 5 of 5 failed. The contexts that should start did not:
+
+```
+Error creating bean with name 'durationPlaceholderTest.Tasks': @KurinScheduledOnce on
+org.kurin.kurinlocksspringbootstarter.DurationPlaceholderTest$Tasks.slot has an invalid slot '${app.job.slot}'.
+Use an ISO-8601 duration such as PT30S or a simple one such as 30s.
+```
+
+and the contexts that should fail did so with that message instead of one that names the missing property.
+
+### Done
+
+- `KurinCoordinationRegistry` is `EnvironmentAware` and resolves placeholders with
+  `Environment.resolveRequiredPlaceholders` before it parses a duration. This covers every duration attribute of
+  the coordination annotations: `interval` of `@KurinLeaderTask`, `ttl` and `waitTimeout` of
+  `@KurinDistributedLock`, `slot` and `lease` of `@KurinScheduledOnce`.
+- Formats: ISO-8601 (`PT30S`), Spring's simple style (`30s`), and a number of milliseconds (`30000`), which is
+  what `DurationStyle` makes of a number without a unit and what `@Scheduled(fixedDelayString)` accepts.
+- A placeholder without a value, and a value that is not a duration, stop the startup. The message names the
+  annotation, the method, the bean, the attribute, the text as written and, if it differs, what it resolved to.
+  The checks that follow (an interval of at least one millisecond, a positive ttl) apply to the resolved value.
+- `KurinLocksAspect` takes the registry and asks it for the durations at the first call of a method; the
+  three-argument constructor remains and takes the attributes as written.
+- Tests: `DurationPlaceholderTest` (6): a value from `application-durations.properties`, loaded by a real
+  `SpringApplication` with the profile `durations`; a default (`${x:10s}`); the three formats; lock and job
+  attributes, checked by their effect (the expiry of the lock, the wait, the slot number); a missing key for
+  each annotation; an invalid value for each; a negative value; the registry without an environment.
+- README of the starter: an example with a placeholder and a section on durations in annotations.
+
+### Decisions and deviations
+
+- **`Environment`, not `EmbeddedValueResolver`.** The spec allows either. The embedded value resolver of a bean
+  factory is strict only if a `PropertySourcesPlaceholderConfigurer` is registered, and a bean post-processor may
+  run before the lenient default is installed; the environment gives the same answer at any time and always
+  fails on a missing key. The price is that `#{...}` expressions are not evaluated in these attributes, which
+  they were not before either.
+- **The duration attributes of the cache annotations (`@KurinCacheable.ttl` and others) are not resolved.** The
+  spec names the locks starter and its neighbouring annotations; the cache starter parses its attributes in two
+  other places. It is the same gap in another module and is left as an open point, not fixed in passing.
+- **Values are read once, at startup.** A property that changes at run time does not change a registered task.
+- The name of the bean was added to all messages of the startup checks of this registry, not only to the new
+  ones, since the spec asks for it and the old messages had only the class and the method.

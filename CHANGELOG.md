@@ -30,6 +30,13 @@ the tests that failed on 1.1.1 and pass now.
   if an attempt to connect fails, and all requests to one peer share one attempt.
   Tests: `PeerStartOrderTest`, `ConnectionManagerTest`, `CommandPathTest`, `LockOutcomeTest` (`kurin-it`).
 
+- **`@KurinLeaderTask(interval = "${...}")` was rejected at startup as an invalid duration**, so the interval
+  could not come from the configuration. Placeholders in `interval`, and in `ttl`, `waitTimeout`, `slot` and
+  `lease` of the neighbouring annotations, are now resolved against the environment when the context starts; a
+  number without a unit is milliseconds. A placeholder without a value, or a value that is not a duration,
+  stops the startup and names the bean, the method and the attribute.
+  Test: `DurationPlaceholderTest`.
+
 ### Added
 
 - `KurinNode.commandPath()` and the detail `commandPath` (`UP`, `CONNECTING`, `DOWN`) of the `kurin` health and

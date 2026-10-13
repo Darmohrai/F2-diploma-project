@@ -35,7 +35,8 @@ public @interface KurinScheduledOnce {
     String name();
 
     /**
-     * Length of a time slot, as {@code PT5M} or {@code 5m}.
+     * Length of a time slot, as {@code PT5M}, {@code 5m} or a number of milliseconds. May be a property
+     * placeholder, {@code "${rates.sync.slot:5m}"}, resolved when the context starts.
      */
     String slot() default "PT5M";
 
@@ -47,6 +48,7 @@ public @interface KurinScheduledOnce {
 
     /**
      * Time the winner has to finish before the slot counts as abandoned. Only used with AT_LEAST_ONCE.
+     * Same formats as {@link #slot()}, placeholders included.
      */
     String lease() default "PT1M";
 }

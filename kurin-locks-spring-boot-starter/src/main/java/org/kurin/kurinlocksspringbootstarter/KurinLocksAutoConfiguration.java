@@ -68,8 +68,9 @@ public class KurinLocksAutoConfiguration {
     }
 
     @Bean
-    public KurinLocksAspect kurinLocksAspect(KurinLockManager lockManager, KurinJobs jobs, KurinNode kurinNode) {
-        return new KurinLocksAspect(lockManager, jobs, kurinNode);
+    public KurinLocksAspect kurinLocksAspect(KurinLockManager lockManager, KurinJobs jobs, KurinNode kurinNode,
+                                             KurinCoordinationRegistry registry) {
+        return new KurinLocksAspect(lockManager, jobs, kurinNode, registry);
     }
 
     @Bean

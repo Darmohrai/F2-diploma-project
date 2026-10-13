@@ -9,7 +9,9 @@ import org.kurin.kurinlocksspringbootstarter.annotation.KurinScheduledOnce;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.convert.DurationStyle;
+import org.springframework.context.EnvironmentAware;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.env.Environment;
 import org.springframework.expression.ParseException;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.util.ReflectionUtils;
@@ -25,8 +27,12 @@ import java.util.Map;
  * Checks the Kurin coordination annotations of every bean when the bean is created, so that a misuse stops the
  * application at startup instead of surfacing on the first call, and collects the {@code @KurinLeaderTask}
  * methods for registration once the node is running.
+ * <p>
+ * The duration attributes of the annotations ({@code interval}, {@code ttl}, {@code waitTimeout}, {@code slot},
+ * {@code lease}) may contain property placeholders. They are resolved here, against the environment of the
+ * application, and a placeholder that cannot be resolved stops the startup like any other invalid value.
  */
-public class KurinCoordinationRegistry implements BeanPostProcessor {
+public class KurinCoordinationRegistry implements BeanPostProcessor, EnvironmentAware {
 
     public record LeaderTaskMethod(String beanName, Method method, String name, Duration interval) {
     }
@@ -34,6 +40,13 @@ public class KurinCoordinationRegistry implements BeanPostProcessor {
     private final SpelExpressionParser parser = new SpelExpressionParser();
     private final List<LeaderTaskMethod> leaderTasks = new ArrayList<>();
     private final Map<String, String> leaderTaskOwners = new HashMap<>();
+    // Absent when the registry is used outside of an application context: values are then taken as written
+    private Environment environment;
+
+    @Override
+    public void setEnvironment(Environment environment) {
+        this.environment = environment;
+    }
 
     @Override
     public synchronized Object postProcessAfterInitialization(Object bean, String beanName) {
@@ -51,7 +64,7 @@ public class KurinCoordinationRegistry implements BeanPostProcessor {
     }
 
     private void validate(String beanName, Method method) {
-        String where = method.getDeclaringClass().getName() + "." + method.getName();
+        String where = method.getDeclaringClass().getName() + "." + method.getName() + " (bean '" + beanName + "')";
 
         KurinDistributedLock lock = AnnotatedElementUtils.findMergedAnnotation(method, KurinDistributedLock.class);
         if (lock != null) {
@@ -111,9 +124,11 @@ public class KurinCoordinationRegistry implements BeanPostProcessor {
                 throw new IllegalStateException("@KurinLeaderTask method " + where + " must take no parameters, "
                         + "(LeadershipToken) or (LeadershipToken, CancellationSignal)");
             }
-            String previous = leaderTaskOwners.putIfAbsent(task.name(), where);
-            if (previous != null && !previous.equals(where)) {
-                throw new IllegalStateException("Leader task name '" + task.name() + "' is used by both " + previous + " and " + where);
+            // Compared without the bean name: the same method met through a second bean is not a second task
+            String declaredBy = method.getDeclaringClass().getName() + "." + method.getName();
+            String previous = leaderTaskOwners.putIfAbsent(task.name(), declaredBy);
+            if (previous != null && !previous.equals(declaredBy)) {
+                throw new IllegalStateException("Leader task name '" + task.name() + "' is used by both " + previous + " and " + declaredBy);
             }
             if (previous == null) {
                 leaderTasks.add(new LeaderTaskMethod(beanName, method, task.name(), interval));
@@ -130,15 +145,42 @@ public class KurinCoordinationRegistry implements BeanPostProcessor {
         }
     }
 
-    private static Duration duration(String value, String attribute, String annotation, String where) {
+    private Duration duration(String value, String attribute, String annotation, String where) {
+        String resolved;
         try {
-            return DurationStyle.detectAndParse(value);
+            resolved = resolvePlaceholders(value);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException(annotation + " on " + where + " has an unresolvable " + attribute + " '" + value
+                    + "': " + e.getMessage() + ". Set the property or give the placeholder a default, as in ${name:30s}.", e);
+        }
+        try {
+            return DurationStyle.detectAndParse(resolved);
         } catch (RuntimeException e) {
-            throw new IllegalStateException(annotation + " on " + where + " has an invalid " + attribute + " '" + value
-                    + "'. Use an ISO-8601 duration such as PT30S or a simple one such as 30s.", e);
+            throw new IllegalStateException(annotation + " on " + where + " has an invalid " + attribute + " '" + value + "'"
+                    + (resolved.equals(value) ? "" : ", which resolves to '" + resolved + "'")
+                    + ". Use an ISO-8601 duration such as PT30S, a simple one such as 30s, or a number of milliseconds.", e);
         }
     }
 
+    private String resolvePlaceholders(String value) {
+        return environment != null ? environment.resolveRequiredPlaceholders(value) : value;
+    }
+
+    /**
+     * Turns a duration attribute of an annotation into a duration: placeholders are resolved against the
+     * environment, then the value is read as an ISO-8601 duration ({@code PT30S}), a simple one ({@code 30s}) or
+     * a number of milliseconds ({@code 30000}).
+     *
+     * @throws IllegalArgumentException if a placeholder has no value or the result is not a duration. For the
+     *                                  annotated methods of beans this was checked when the context started.
+     */
+    public Duration resolveDuration(String value) {
+        return DurationStyle.detectAndParse(resolvePlaceholders(value));
+    }
+
+    /**
+     * Parses a duration that contains no placeholders.
+     */
     public static Duration parseDuration(String value) {
         return DurationStyle.detectAndParse(value);
     }

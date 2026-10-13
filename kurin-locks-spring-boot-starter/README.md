@@ -58,6 +58,35 @@ public void relay(LeadershipToken token, CancellationSignal signal) { ... }
 A background loop on the leader; needs no `@Scheduled`. Parameters: none, a `LeadershipToken`, or a token and a
 `CancellationSignal`.
 
+The interval can come from the configuration:
+
+```java
+@KurinLeaderTask(name = "outbox-relay", interval = "${outbox.relay.interval:2s}")
+public void relay() { ... }
+```
+
+```properties
+outbox.relay.interval=500ms
+```
+
+## Durations in annotations
+
+`interval`, `ttl`, `waitTimeout`, `slot` and `lease` are strings in one of three forms, the ones
+`@Scheduled(fixedDelayString = ...)` accepts: ISO-8601 (`PT30S`), simple (`30s`, `500ms`, `5m`), or a number of
+milliseconds (`30000`). Each may be or contain a property placeholder, `${name}` or `${name:default}`, resolved
+against the environment of the application when the context starts.
+
+A placeholder that has no value and no default, and a value that is not a duration, stop the startup:
+
+```
+@KurinLeaderTask on com.example.Outbox.relay (bean 'outbox') has an unresolvable interval '${outbox.relay.interval}':
+Could not resolve placeholder 'outbox.relay.interval' in value "${outbox.relay.interval}". Set the property or give
+the placeholder a default, as in ${name:30s}.
+```
+
+There is no silent default. The values are read once: changing a property at run time does not change a
+registered task or lock.
+
 ## `@KurinScheduledOnce`
 
 ```java
@@ -92,7 +121,8 @@ Both follow the rule of the annotation: empty or `KurinLockAcquisitionException`
 
 ## Startup checks
 
-Annotations are validated when the context starts, not at the first call: unparsable durations, `SKIP` on a
+Annotations are validated when the context starts, not at the first call: unparsable durations and placeholders
+without a value, `SKIP` on a
 primitive return type, `WAIT` without a wait timeout, duplicate task names, unsupported parameters of a leader
 task. Leader tasks start only after the node has started.
 

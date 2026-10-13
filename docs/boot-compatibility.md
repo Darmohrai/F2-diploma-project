@@ -81,6 +81,7 @@ All present with the same names and the used signatures in 6.1 and 7.0.9:
 | Beans, context | `BeanPostProcessor`, `BeanFactoryAware`, `ObjectProvider`, `InitializingBean`, `SmartLifecycle`, `ApplicationEventPublisher`, `ApplicationEvent`, `SmartApplicationListener`, `@Bean`, `@Configuration`, `@Primary`, `@EnableAspectJAutoProxy` | all starters |
 | AOP | `AopUtils`, `AopProxyUtils`; AspectJ `@Aspect`, `@Around`, `ProceedingJoinPoint`, `MethodSignature` | all starters |
 | Core | `AnnotatedElementUtils`, `Ordered`, `@Order`, `DefaultParameterNameDiscoverer`, `ReflectionUtils`, `ClassUtils`, `DataSize` | all starters |
+| Environment | `EnvironmentAware`, `Environment.resolveRequiredPlaceholders` (placeholders in the duration attributes of the coordination annotations, since 1.1.2) | locks starter |
 | SpEL | `SpelExpressionParser`, `Expression`, `ParseException`, `MethodBasedEvaluationContext` | locks, cache, routing starters |
 | Transactions | `TransactionSynchronizationManager`, `TransactionSynchronization` | cache, routing starters |
 | JDBC | `AbstractDataSource`, `DelegatingDataSource`, `LazyConnectionDataSourceProxy`, `JdbcTemplate`, `DataSourceTransactionManager` | routing starter |

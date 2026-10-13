@@ -46,12 +46,15 @@ public @interface KurinDistributedLock {
     String key();
 
     /**
-     * Time to live of the lock, as an ISO-8601 duration ({@code PT30S}) or in Spring style ({@code 30s}).
+     * Time to live of the lock, as an ISO-8601 duration ({@code PT30S}), in Spring style ({@code 30s}) or as a
+     * number of milliseconds. May be a property placeholder, {@code "${invoices.lock-ttl:30s}"}, resolved when
+     * the context starts.
      */
     String ttl() default "PT30S";
 
     /**
      * How long to wait for a busy lock before {@link #onBusy()} applies. Zero means a single attempt.
+     * Same formats as {@link #ttl()}, placeholders included.
      */
     String waitTimeout() default "PT0S";
 
