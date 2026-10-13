@@ -56,6 +56,9 @@ public class KurinAutoConfiguration {
         raft.setMaxInflightAppends(props.getMaxInflightAppends());
         raft.setSnapshotThresholdEntries(props.getSnapshotThreshold());
         raft.setDedupCacheSize(props.getDedupCacheSize());
+        raft.setStorageRetryMinMs(props.getStorageRetryMin().toMillis());
+        raft.setStorageRetryMaxMs(props.getStorageRetryMax().toMillis());
+        builder.allowServicesWithoutSnapshot(props.isAllowServicesWithoutSnapshot());
 
         NetworkConfig network = builder.networkConfig();
         network.setMaxPayloadSize(Math.toIntExact(props.getMaxPayloadSize().toBytes()));

@@ -49,6 +49,17 @@ public interface RaftLog extends AutoCloseable {
     void sync();
 
     /**
+     * Brings the stored log back in line with the entries this object holds, after an operation failed with an
+     * I/O error. Until it returns normally, nothing appended since the last successful {@link #sync()} may be
+     * assumed durable. The default suits logs that keep nothing outside of memory.
+     *
+     * @throws java.io.UncheckedIOException if the storage still does not work
+     */
+    default void recover() {
+        sync();
+    }
+
+    /**
      * @return the highest index known to survive a crash; equals {@link #getLastLogIndex()} right after {@link #sync()}
      */
     long getDurableIndex();

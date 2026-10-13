@@ -24,6 +24,8 @@ public class RaftConfig {
     private int dedupCacheSize = 10_000;
     private StorageType storage = StorageType.FILE;
     private Path dataDir;
+    private long storageRetryMinMs = 100;
+    private long storageRetryMaxMs = 10_000;
 
     /**
      * @throws IllegalArgumentException if the timing settings cannot produce a stable cluster
@@ -47,6 +49,9 @@ public class RaftConfig {
                 || snapshotThresholdEntries <= 0 || dedupCacheSize <= 0) {
             throw new IllegalArgumentException("commandTimeoutMs, maxEntriesPerAppend, maxInflightAppends, "
                     + "snapshotThresholdEntries and dedupCacheSize must be positive");
+        }
+        if (storageRetryMinMs <= 0 || storageRetryMaxMs < storageRetryMinMs) {
+            throw new IllegalArgumentException("storageRetryMinMs must be positive and not above storageRetryMaxMs");
         }
     }
 
@@ -150,5 +155,25 @@ public class RaftConfig {
 
     public void setDataDir(Path dataDir) {
         this.dataDir = dataDir;
+    }
+
+    /**
+     * @return delay before the first attempt to use the storage again after it failed; doubles with every
+     * failed attempt up to {@link #getStorageRetryMaxMs()}
+     */
+    public long getStorageRetryMinMs() {
+        return storageRetryMinMs;
+    }
+
+    public void setStorageRetryMinMs(long storageRetryMinMs) {
+        this.storageRetryMinMs = storageRetryMinMs;
+    }
+
+    public long getStorageRetryMaxMs() {
+        return storageRetryMaxMs;
+    }
+
+    public void setStorageRetryMaxMs(long storageRetryMaxMs) {
+        this.storageRetryMaxMs = storageRetryMaxMs;
     }
 }

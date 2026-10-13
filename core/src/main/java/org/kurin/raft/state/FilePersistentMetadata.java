@@ -73,7 +73,7 @@ public class FilePersistentMetadata implements PersistentMetadata {
                 Files.move(tempPath, filePath, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
-            throw new IllegalStateException("Cannot persist Raft term and vote to " + filePath
+            throw new java.io.UncheckedIOException("Cannot persist Raft term and vote to " + filePath
                     + ". The node cannot safely take part in elections.", e);
         }
         this.currentTerm = term;

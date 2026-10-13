@@ -14,4 +14,12 @@ public interface SnapshotStore {
      * Replaces the stored snapshot. The new one is durable before the method returns.
      */
     void save(Snapshot snapshot);
+
+    /**
+     * Checks that a snapshot could be saved right now, without changing the stored one.
+     *
+     * @throws java.io.UncheckedIOException if the storage does not accept writes
+     */
+    default void verifyWritable() {
+    }
 }

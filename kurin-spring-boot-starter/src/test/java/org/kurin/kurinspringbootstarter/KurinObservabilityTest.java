@@ -57,6 +57,16 @@ class KurinObservabilityTest {
         public int current(Current query) {
             return value;
         }
+
+        @org.kurin.api.KurinSnapshot
+        public byte[] snapshot() {
+            return java.nio.ByteBuffer.allocate(Integer.BYTES).putInt(value).array();
+        }
+
+        @org.kurin.api.KurinRestore
+        public void restore(byte[] snapshot) {
+            value = java.nio.ByteBuffer.wrap(snapshot).getInt();
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -165,6 +175,60 @@ class KurinObservabilityTest {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> nodeSection = (Map<String, Object>) endpoint.get("node");
                     assertThat(nodeSection).containsEntry("leadershipEstablished", true).containsEntry("lastApplied", node.status().lastApplied());
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class BreakableStorage {
+        static final org.kurin.test.FaultInjectingStorage FAULTS = new org.kurin.test.FaultInjectingStorage();
+
+        @Bean
+        org.kurin.kurinspringbootstarter.starter.KurinNodeBuilderCustomizer breakableStorage() {
+            return builder -> builder.storageDecorator(FAULTS::wrap);
+        }
+    }
+
+    @Test
+    void failedStorageIsReportedAsDownAndClearsAfterRepair() {
+        BreakableStorage.FAULTS.setBroken(false);
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(KurinAutoConfiguration.class, KurinObservabilityAutoConfiguration.class))
+                .withUserConfiguration(App.class, BreakableStorage.class)
+                .withPropertyValues(
+                        "kurin.node.port=" + TestPorts.freePort(),
+                        "kurin.node.storage=memory",
+                        "kurin.node.heartbeat-interval=30ms",
+                        "kurin.node.election-timeout-min=300ms",
+                        "kurin.node.election-timeout-max=600ms",
+                        "kurin.node.storage-retry-min=20ms",
+                        "kurin.node.storage-retry-max=100ms")
+                .run(context -> {
+                    KurinNode node = context.getBean(KurinNode.class);
+                    KurinTemplate template = context.getBean(KurinTemplate.class);
+                    KurinHealthIndicator indicator = context.getBean(KurinHealthIndicator.class);
+                    MeterRegistry meters = context.getBean(MeterRegistry.class);
+                    await().atMost(Duration.ofSeconds(10)).until(() -> node.leadership().isPresent());
+                    assertThat(meters.get("kurin.raft.storage.failed").gauge().value()).isZero();
+
+                    BreakableStorage.FAULTS.setBroken(true);
+                    org.assertj.core.api.Assertions.assertThatThrownBy(() -> template.submitCommand(new Increment(1)).get(5, TimeUnit.SECONDS))
+                            .hasCauseInstanceOf(org.kurin.api.exception.KurinStorageException.class);
+
+                    await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+                        Health health = indicator.health();
+                        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+                        assertThat(String.valueOf(health.getDetails().get("storageFailure"))).contains("Injected storage failure");
+                    });
+                    assertThat(meters.get("kurin.raft.storage.failed").gauge().value()).isEqualTo(1.0);
+
+                    BreakableStorage.FAULTS.setBroken(false);
+                    await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+                        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+                        assertThat(indicator.health().getDetails()).doesNotContainKey("storageFailure");
+                    });
+                    assertThat(meters.get("kurin.raft.storage.failed").gauge().value()).isZero();
+                    int value = template.<Integer>submitCommand(new Increment(1)).get(5, TimeUnit.SECONDS);
+                    assertThat(value).isEqualTo(1);
                 });
     }
 

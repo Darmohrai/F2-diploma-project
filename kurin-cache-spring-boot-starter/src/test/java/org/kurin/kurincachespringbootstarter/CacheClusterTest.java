@@ -124,8 +124,10 @@ class CacheClusterTest {
     }
 
     /**
-     * A replicated state machine whose commands keep a cache in step on every instance.
+     * A replicated state machine whose commands keep a cache in step on every instance. It holds nothing
+     * itself: the cache annotations act when a command is applied.
      */
+    @org.kurin.api.KurinService(stateless = true)
     public static class Prices {
         @KurinCommand
         @KurinCachePut(cacheName = "prices", key = "#cmd.sku")

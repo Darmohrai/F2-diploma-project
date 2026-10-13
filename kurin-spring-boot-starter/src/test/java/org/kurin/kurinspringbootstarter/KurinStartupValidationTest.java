@@ -114,6 +114,7 @@ class KurinStartupValidationTest {
                 });
     }
 
+    @org.kurin.api.KurinService(stateless = true)
     public static class PingService {
         @KurinCommand
         public String ping(Ping command) {
@@ -124,6 +125,91 @@ class KurinStartupValidationTest {
     /**
      * Uses the template while the context is still being built, before the node is started.
      */
+    public record Remember(String text) {
+    }
+
+    /**
+     * Keeps what its commands bring, but cannot hand it to a node that catches up from a snapshot.
+     */
+    public static class ForgetfulService {
+        private final java.util.List<String> remembered = new java.util.ArrayList<>();
+
+        @KurinCommand
+        public int remember(Remember command) {
+            remembered.add(command.text());
+            return remembered.size();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ForgetfulConfig {
+        @Bean
+        ForgetfulService forgetfulService() {
+            return new ForgetfulService();
+        }
+    }
+
+    @Test
+    void serviceWithCommandsAndNoSnapshotFailsContextStartup() {
+        runner().withUserConfiguration(ForgetfulConfig.class).run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).rootCause()
+                    .hasMessageContaining(ForgetfulService.class.getName())
+                    .hasMessageContaining("@KurinSnapshot")
+                    .hasMessageContaining("stateless = true")
+                    .hasMessageContaining("kurin.node.allow-services-without-snapshot");
+        });
+    }
+
+    @Test
+    void serviceWithoutSnapshotStartsWhenExplicitlyAllowed() {
+        runner().withUserConfiguration(ForgetfulConfig.class)
+                .withPropertyValues("kurin.node.allow-services-without-snapshot=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    KurinNode node = context.getBean(KurinNode.class);
+                    org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).until(() -> node.leadership().isPresent());
+                    assertThat(context.getBean(KurinTemplate.class).<Integer>submitCommand(new Remember("a")).get(5, TimeUnit.SECONDS))
+                            .isEqualTo(1);
+                });
+    }
+
+    @org.kurin.api.KurinService(stateless = true)
+    public static class ContradictoryService {
+        @KurinCommand
+        public String ping(Ping command) {
+            return command.text();
+        }
+
+        @KurinSnapshot
+        public byte[] snapshot() {
+            return new byte[0];
+        }
+
+        @KurinRestore
+        public void restore(byte[] snapshot) {
+            // Nothing is kept, so there is nothing to put back
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ContradictoryConfig {
+        @Bean
+        ContradictoryService contradictoryService() {
+            return new ContradictoryService();
+        }
+    }
+
+    @Test
+    void statelessServiceWithSnapshotMethodsFailsContextStartup() {
+        runner().withUserConfiguration(ContradictoryConfig.class).run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).rootCause()
+                    .hasMessageContaining("declared stateless")
+                    .hasMessageContaining("@KurinSnapshot");
+        });
+    }
+
     public static class EagerCaller implements InitializingBean {
         static final AtomicReference<CompletableFuture<Object>> EARLY_RESULT = new AtomicReference<>();
         private final KurinTemplate kurinTemplate;

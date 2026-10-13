@@ -13,8 +13,8 @@ public interface PersistentMetadata {
     /**
      * Stores both values durably before returning.
      *
-     * @throws IllegalStateException if the values cannot be persisted; the node must not answer
-     *                               a vote or acknowledge a term it may forget
+     * @throws java.io.UncheckedIOException if the values cannot be persisted; the node must not answer
+     *                                      a vote or acknowledge a term it may forget
      */
     void save(long term, NodeAddress votedFor);
 }

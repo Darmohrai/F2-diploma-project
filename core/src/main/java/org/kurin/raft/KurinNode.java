@@ -60,6 +60,8 @@ public class KurinNode {
     private final NetworkConfig networkConfig;
     private final KurinTypeRegistry typeRegistry;
     private final UnaryOperator<KurinTransport> transportDecorator;
+    private final UnaryOperator<RaftStorage> storageDecorator;
+    private final boolean allowServicesWithoutSnapshot;
     private final List<PojoStateMachine.Service> services;
     private final List<StateMachineListener> listeners;
     private final List<RoleChangeListener> roleListeners;
@@ -79,6 +81,8 @@ public class KurinNode {
         this.networkConfig = builder.networkConfig;
         this.typeRegistry = builder.typeRegistry;
         this.transportDecorator = builder.transportDecorator;
+        this.storageDecorator = builder.storageDecorator;
+        this.allowServicesWithoutSnapshot = builder.allowServicesWithoutSnapshot;
         this.services = new ArrayList<>(builder.services);
         this.listeners = new ArrayList<>(builder.listeners);
         this.roleListeners = new ArrayList<>(builder.roleListeners);
@@ -173,7 +177,7 @@ public class KurinNode {
         if (lifecycle != Lifecycle.NEW) {
             throw new IllegalStateException("Node " + nodeId() + " cannot be started twice");
         }
-        PojoStateMachine stateMachine = new PojoStateMachine(services);
+        PojoStateMachine stateMachine = new PojoStateMachine(services, allowServicesWithoutSnapshot);
         stateMachine.messageHandlerMethods().forEach(typeRegistry::registerHandler);
         typeRegistry.freeze();
         KryoSerializer nodeSerializer = new KryoSerializer(typeRegistry);
@@ -181,7 +185,7 @@ public class KurinNode {
         listeners.forEach(stateMachine::addListener);
 
         RaftNode node = new RaftNode(localAddress, peers, stateMachine, raftConfig, networkConfig, nodeSerializer,
-                roleListeners, transportDecorator, observers, instrumentation);
+                roleListeners, transportDecorator, storageDecorator, observers, instrumentation);
         try {
             node.start();
         } catch (RuntimeException e) {
@@ -439,6 +443,8 @@ public class KurinNode {
         private final List<StateMachineListener> listeners = new ArrayList<>();
         private final List<RoleChangeListener> roleListeners = new ArrayList<>();
         private UnaryOperator<KurinTransport> transportDecorator = UnaryOperator.identity();
+        private UnaryOperator<RaftStorage> storageDecorator = UnaryOperator.identity();
+        private boolean allowServicesWithoutSnapshot;
         private final List<KurinObserver> observers = new ArrayList<>();
         private KurinInstrumentation instrumentation = KurinInstrumentation.NOOP;
 
@@ -534,6 +540,25 @@ public class KurinNode {
          */
         public Builder transportDecorator(UnaryOperator<KurinTransport> transportDecorator) {
             this.transportDecorator = transportDecorator;
+            return this;
+        }
+
+        /**
+         * Wraps the durable storage of the node (log, snapshots, term and vote), or replaces it with another
+         * implementation. Meant for fault injection in tests and for custom storage back ends.
+         */
+        public Builder storageDecorator(UnaryOperator<RaftStorage> storageDecorator) {
+            this.storageDecorator = storageDecorator;
+            return this;
+        }
+
+        /**
+         * Lets the node start with services that handle commands, are not declared stateless and have no
+         * snapshot methods. Their state is lost on every node that restarts or catches up after the log was
+         * compacted; a warning is logged for each. By default such a service fails the start.
+         */
+        public Builder allowServicesWithoutSnapshot(boolean allowServicesWithoutSnapshot) {
+            this.allowServicesWithoutSnapshot = allowServicesWithoutSnapshot;
             return this;
         }
 

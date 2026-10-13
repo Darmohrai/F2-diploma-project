@@ -103,6 +103,29 @@ class KurinStarterIntegrationTest {
         public double balance(BalanceQuery query) {
             return accounts.getOrDefault(query.accountId(), 0.0);
         }
+
+        @org.kurin.api.KurinSnapshot
+        public byte[] snapshot() throws java.io.IOException {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            try (java.io.DataOutputStream out = new java.io.DataOutputStream(bytes)) {
+                out.writeInt(accounts.size());
+                for (Map.Entry<String, Double> account : accounts.entrySet()) {
+                    out.writeUTF(account.getKey());
+                    out.writeDouble(account.getValue());
+                }
+            }
+            return bytes.toByteArray();
+        }
+
+        @org.kurin.api.KurinRestore
+        public void restore(byte[] snapshot) throws java.io.IOException {
+            accounts.clear();
+            try (java.io.DataInputStream in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(snapshot))) {
+                for (int remaining = in.readInt(); remaining > 0; remaining--) {
+                    accounts.put(in.readUTF(), in.readDouble());
+                }
+            }
+        }
     }
 
     public static class LeadershipRecorder {

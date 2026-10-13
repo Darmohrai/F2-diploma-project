@@ -50,6 +50,7 @@ public class RaftNode {
     public RaftNode(NodeAddress localAddress, Set<NodeAddress> peers, StateMachine stateMachine,
                     RaftConfig raftConfig, NetworkConfig networkConfig, KryoSerializer serializer,
                     List<RoleChangeListener> roleListeners, UnaryOperator<KurinTransport> transportDecorator,
+                    UnaryOperator<RaftStorage> storageDecorator,
                     List<org.kurin.api.KurinObserver> observers, org.kurin.api.KurinInstrumentation instrumentation) {
         AtomicReference<Thread> raftThread = new AtomicReference<>();
         CountDownLatch threadStarted = new CountDownLatch(1);
@@ -64,19 +65,19 @@ public class RaftNode {
         raftExecutor.execute(threadStarted::countDown);
         awaitUninterruptibly(threadStarted);
 
-        PersistentMetadata metadata;
-        SnapshotStore snapshotStore;
+        RaftStorage builtIn;
         if (raftConfig.getStorage() == RaftConfig.StorageType.MEMORY) {
-            metadata = new InMemoryPersistentMetadata();
-            this.raftLog = new InMemoryRaftLog();
-            snapshotStore = new InMemorySnapshotStore();
+            builtIn = new RaftStorage(new InMemoryRaftLog(), new InMemorySnapshotStore(), new InMemoryPersistentMetadata());
         } else {
             Path dataDir = resolveDataDir(raftConfig, localAddress);
-            metadata = new FilePersistentMetadata(dataDir);
-            this.raftLog = new FileRaftLog(dataDir.resolve("log"), serializer);
-            snapshotStore = new FileSnapshotStore(dataDir, serializer);
+            builtIn = new RaftStorage(new FileRaftLog(dataDir.resolve("log"), serializer),
+                    new FileSnapshotStore(dataDir, serializer), new FilePersistentMetadata(dataDir));
             log.info("Node {} keeps its state in {}", localAddress.asString(), dataDir.toAbsolutePath());
         }
+        RaftStorage storage = storageDecorator.apply(builtIn);
+        PersistentMetadata metadata = storage.metadata();
+        SnapshotStore snapshotStore = storage.snapshots();
+        this.raftLog = storage.log();
 
         this.raftState = new RaftState(raftConfig, localAddress, peers, raftLog, stateMachine, metadata, serializer,
                 roleListeners, raftExecutor, raftThread.get(), snapshotStore, () -> !raftQueue.isEmpty());
@@ -164,7 +165,12 @@ public class RaftNode {
             raftExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        raftLog.close();
+        try {
+            raftLog.close();
+        } catch (RuntimeException e) {
+            // Everything acknowledged was flushed when it was acknowledged; a log that cannot be closed loses nothing
+            log.warn("The Raft log of {} could not be closed cleanly: {}", raftState.getLocalAddress().asString(), e.toString());
+        }
     }
 
     public RaftState getRaftState() {

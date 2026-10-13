@@ -7,6 +7,7 @@ import org.kurin.api.KurinInstrumentation;
 import org.kurin.api.KurinObserver;
 import org.slf4j.MDC;
 import org.kurin.api.exception.KurinNotStartedException;
+import org.kurin.api.exception.KurinStorageException;
 import org.kurin.network.client.KurinTransport;
 import org.kurin.network.model.NodeAddress;
 import org.kurin.network.serializer.KryoSerializer;
@@ -61,6 +62,15 @@ public class RaftState {
     private final BooleanSupplier moreTasksQueued;
     private int tasksSinceSync;
 
+    // The unguarded storage, used only to find out whether it works again
+    private final RaftLog rawLog;
+    private final PersistentMetadata rawMetadata;
+    private final SnapshotStore rawSnapshotStore;
+    // The first I/O error since the storage last worked; null while it works
+    private Throwable storageFailure;
+    private long storageRetryDelayMs;
+    private long storageRetryEpoch;
+
     private KurinTransport transport;
     private Timer timer;
 
@@ -89,14 +99,19 @@ public class RaftState {
                      StateMachine stateMachine, PersistentMetadata metadata, KryoSerializer serializer,
                      List<RoleChangeListener> roleListeners, ExecutorService raftExecutor, Thread raftThread,
                      SnapshotStore snapshotStore, BooleanSupplier moreTasksQueued) {
-        this.snapshotStore = snapshotStore;
         this.moreTasksQueued = moreTasksQueued;
         this.config = config;
         this.localAddress = localAddress;
         this.peers = Set.copyOf(peers);
-        this.raftLog = raftLog;
+        this.rawLog = raftLog;
+        this.rawMetadata = metadata;
+        this.rawSnapshotStore = snapshotStore;
+        // Everything below this constructor talks to the storage through the guard
+        GuardedStorage guard = new GuardedStorage(this::recordStorageFailure);
+        this.raftLog = guard.guard(raftLog);
+        this.metadata = guard.guard(metadata);
+        this.snapshotStore = guard.guard(snapshotStore);
         this.stateMachine = stateMachine;
-        this.metadata = metadata;
         this.serializer = serializer;
         this.roleListeners = List.copyOf(roleListeners);
         this.raftExecutor = raftExecutor;
@@ -125,11 +140,15 @@ public class RaftState {
             raftExecutor.execute(() -> {
                 try {
                     task.run();
+                } catch (KurinStorageException e) {
+                    // Reported once, with its cause, when the node leaves the cluster below
+                    log.debug("A task on the Raft thread of {} was cut short: {}", localAddress.asString(), e.getMessage());
                 } catch (Throwable t) {
                     // The Raft thread must survive: a dead thread would silently freeze the node
                     log.error("Unexpected error on the Raft thread of {}", localAddress.asString(), t);
                 } finally {
                     flushLogIfIdle();
+                    leaveClusterIfStorageFailed();
                     publishStatus();
                 }
             });
@@ -140,6 +159,9 @@ public class RaftState {
 
     // Group commit: entries appended by the tasks of one burst share a single disk flush
     private void flushLogIfIdle() {
+        if (storageFailure != null) {
+            return;
+        }
         if (raftLog.getDurableIndex() >= raftLog.getLastLogIndex()) {
             tasksSinceSync = 0;
             return;
@@ -153,9 +175,90 @@ public class RaftState {
             if (currentRole != null) {
                 currentRole.onLogDurable(this);
             }
+        } catch (KurinStorageException e) {
+            // A leader that cannot flush would never count itself towards a commit, and a follower would
+            // acknowledge nothing: the node is of no use to the cluster and says so instead of going quiet
+            log.debug("The Raft log of {} could not be flushed: {}", localAddress.asString(), e.getMessage());
         } catch (Throwable t) {
-            log.error("Cannot flush the Raft log of {}", localAddress.asString(), t);
+            log.error("Unexpected error after flushing the Raft log of {}", localAddress.asString(), t);
         }
+    }
+
+    // ---------------------------------------------------------------- storage failure
+
+    // Called by the storage guard, in the middle of whatever operation hit the error
+    private KurinStorageException recordStorageFailure(java.io.UncheckedIOException cause) {
+        assertOnRaftThread();
+        if (storageFailure == null) {
+            storageFailure = cause;
+        }
+        return new KurinStorageException("Node " + localAddress.asString() + " cannot write its durable state: "
+                + cause.getMessage(), cause);
+    }
+
+    /**
+     * @return the exception for a request that reaches this node while its storage is failed
+     */
+    public KurinStorageException storageUnavailable() {
+        Throwable cause = storageFailure;
+        return new KurinStorageException("Node " + localAddress.asString() + " is out of service until its storage works again"
+                + (cause != null ? ": " + cause.getMessage() : ""));
+    }
+
+    public boolean storageFailed() {
+        return storageFailure != null;
+    }
+
+    /**
+     * Runs at the end of every task. The role is changed here and not where the error occurred, because that
+     * place is in the middle of a handler whose role would be pulled from under it.
+     */
+    private void leaveClusterIfStorageFailed() {
+        if (storageFailure == null || currentRole == null || currentRole instanceof org.kurin.raft.state.roles.StorageFailedRole) {
+            return;
+        }
+        log.error("Node {} cannot write its durable state and leaves the cluster until the storage works again. "
+                + "It will not vote, accept entries or serve clients.", localAddress.asString(), storageFailure);
+        try {
+            failPendingClientRequests(storageUnavailable());
+            currentLeader = null;
+            transitionTo(new org.kurin.raft.state.roles.StorageFailedRole());
+            Throwable cause = storageFailure;
+            observe(observer -> observer.onStorageFailure(cause));
+            storageRetryDelayMs = config.getStorageRetryMinMs();
+            scheduleStorageRetry();
+        } catch (Throwable t) {
+            log.error("Unexpected error while node {} was leaving the cluster", localAddress.asString(), t);
+        }
+    }
+
+    private void scheduleStorageRetry() {
+        long epoch = ++storageRetryEpoch;
+        long delayMs = storageRetryDelayMs;
+        timer.newTimeout(t -> executeQuietly(() -> {
+            if (epoch == storageRetryEpoch && currentRole instanceof org.kurin.raft.state.roles.StorageFailedRole) {
+                retryStorage();
+            }
+        }), delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    private void retryStorage() {
+        try {
+            // Whatever was appended but not flushed is written again; a flush alone would not bring it back
+            rawLog.recover();
+            rawMetadata.save(rawMetadata.getCurrentTerm(), rawMetadata.getVotedFor());
+            rawSnapshotStore.verifyWritable();
+        } catch (RuntimeException e) {
+            storageRetryDelayMs = Math.min(storageRetryDelayMs * 2, config.getStorageRetryMaxMs());
+            log.warn("The storage of node {} still fails: {}. Next attempt in {} ms.", localAddress.asString(),
+                    e.getMessage(), storageRetryDelayMs);
+            scheduleStorageRetry();
+            return;
+        }
+        storageFailure = null;
+        log.info("The storage of node {} works again. The node returns to the cluster as a follower.", localAddress.asString());
+        observe(KurinObserver::onStorageRecovered);
+        transitionTo(new FollowerRole());
     }
 
     public void assertOnRaftThread() {
@@ -177,7 +280,8 @@ public class RaftState {
         long lease = currentRole instanceof LeaseHolder holder ? holder.leaseValidUntilNanos() : 0;
         RaftStatus fresh = new RaftStatus(role, metadata.getCurrentTerm(),
                 currentLeader != null ? currentLeader.asString() : null,
-                commitIndex, lastApplied, raftLog.getLastLogIndex(), lease, localAddress.asString());
+                commitIndex, lastApplied, raftLog.getLastLogIndex(), lease, localAddress.asString(),
+                storageFailure != null ? String.valueOf(storageFailure.getMessage()) : null);
         RaftStatus previous = status;
         if (!fresh.equals(previous)) {
             status = fresh;

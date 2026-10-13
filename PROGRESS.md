@@ -440,3 +440,79 @@ options, read/write routing, shard router). Phase 1 builds on it.
   low on memory) after 3 and 2 complete green runs. The suites of phases 1 to 6 passed 20 runs in a row when
   those phases were finished. To finish the check:
   `for i in $(seq 1 20); do ./mvnw -o -q -pl kurin-spring-boot-starter,kurin-data-routing,kurin-data-routing-spring-boot-starter surefire:test || break; done`
+
+---
+
+# Kurin 1.1.1
+
+Work follows `KURIN_1.1.1_FIXES_CLAUDE_CODE_PROMPT.md` (fixes after the review of 1.1.0), phase by phase, on branch
+`feature/kurin-1.1.1`.
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| A | Services without snapshots (section 4), disk failure (section 3) | done |
+| B | Spring Boot 3.2+ and 4.x compatibility, Actuator adapters, integration test modules (section 2) | pending |
+| C | Database access outside of a shard, migrations per shard, `db` health, Hibernate (section 1) | pending |
+| D | Routing section of `/actuator/kurin`, fan-out observation, `diff` performance (section 5) | pending |
+| E | Stability runs, release 1.1.1 (sections 6 and 7) | pending |
+
+## 1.1.1, phase A
+
+### Done
+
+**Services without snapshots (section 4)**
+
+- A service with `@KurinCommand` handlers and no `@KurinSnapshot` / `@KurinRestore` methods now fails the start of
+  the node, with a message that names the service and the three ways out.
+- `@KurinService(stateless = true)` declares a service whose commands keep nothing in its memory. `value` of the
+  annotation got a default (empty: the class name), so that `stateless` can be given alone.
+- `KurinNode.Builder.allowServicesWithoutSnapshot(true)` / `kurin.node.allow-services-without-snapshot=true` restores
+  the old behaviour for all services, with a warning per service.
+- A service declared stateless that has snapshot methods is refused as contradictory.
+- The state machines of the framework were checked: `LockStateMachine`, `JobStateMachine` and
+  `CacheInvalidationStateMachine` all have snapshot and restore methods.
+- Tests: `KurinStartupValidationTest` (refused, allowed by property, contradictory declaration). Test services that
+  kept state got snapshot methods; those that act only through cache annotations are declared stateless.
+
+**Disk failure (section 3)**
+
+- A node whose storage fails enters the state `STORAGE_FAILED`: `RaftStatus.storageFailure()` holds the reason,
+  `storageFailed()` is true. A leader steps down; the node neither votes nor answers pre-votes, does not stand for
+  election, refuses `AppendEntries` and `InstallSnapshot`, and fails commands and queries (local reads included)
+  with the new `KurinStorageException`. Requests that were pending on it end with the same exception.
+- Every access to the log, the snapshot store and the term/vote file goes through `GuardedStorage`. An
+  `UncheckedIOException` from any of them is recorded and reaches the caller as `KurinStorageException`; the role
+  changes when the running task ends (`RaftState.leaveClusterIfStorageFailed`), not in the middle of a handler.
+- `flushLogIfIdle` no longer swallows a failed flush: it leads to the same state.
+- Recovery runs on the Raft thread with exponential backoff, 100 ms doubling up to 10 s
+  (`RaftConfig.storageRetryMinMs/MaxMs`, `kurin.node.storage-retry-min/max`). An attempt calls `RaftLog.recover()`,
+  saves term and vote again and calls `SnapshotStore.verifyWritable()`; when all three succeed the node returns as
+  a follower.
+- `KurinObserver.onStorageFailure(cause)` / `onStorageRecovered()`, gauge `kurin.raft.storage.failed`, health
+  `kurin` is `DOWN` with detail `storageFailure`, `/actuator/kurin` shows the reason.
+- `KurinNode.Builder.storageDecorator(...)` with the record `RaftStorage(log, snapshots, metadata)`; in `kurin-test`
+  `FaultInjectingStorage` and `KurinTestCluster.breakStorage / repairStorage / storageFaults`.
+- Tests: `RaftStorageFailureTest` (leader with a failed disk yields, two healthy nodes carry on, the node returns
+  and catches up; a failed follower does not hold back commits; a failed snapshot store; file log rewritten after
+  repair and read back after a restart), `FileRaftLogTest.recoverRewritesDamagedFilesFromMemory`,
+  `KurinObservabilityTest.failedStorageIsReportedAsDownAndClearsAfterRepair`.
+
+### Decisions and deviations
+
+- **Recovery rewrites the log; it does not just flush again.** The spec says "retry `sync`". After a failed
+  `fsync` the operating system may have dropped the dirty pages, so a later `fsync` that succeeds proves nothing
+  about them, and a failed append can leave a torn record. `RaftLog.recover()` therefore writes the entries held
+  in memory to a fresh segment, flushes it and puts it in place of the old files. For a log that lives in memory
+  the default `recover()` is `sync()`, as the spec describes.
+- **`STORAGE_FAILED` is a field of `RaftStatus`, not a fourth `RaftRole`.** The spec asks for a field. The node
+  reports the role `FOLLOWER`, so code that switches over the three roles keeps working; `RaftStatus` kept its
+  eight-argument constructor.
+- **A failed node does not adopt a higher term.** It could not persist it. It keeps the term it had and adopts the
+  current one from the first `AppendEntries` after it returns.
+- **A storage failure during start still fails the start.** There is no role to leave yet, and starting a node
+  that cannot read or write its state would only hide the problem.
+- **`FilePersistentMetadata.save` now throws `UncheckedIOException`** instead of `IllegalStateException`, so that
+  all three parts of the storage report I/O failures the same way.
+- **`AT_MOST_ONCE` semantics of commands are unchanged.** A command refused with `KurinStorageException` before it
+  was appended was not applied; one that was already in the log has an unknown outcome and can be retried with
+  the same request id, exactly as after a leader change.

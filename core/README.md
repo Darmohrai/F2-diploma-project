@@ -55,7 +55,7 @@ whole node. Any node accepts commands and queries: a follower forwards them to t
 | `@KurinCommand` | method | Handler of a replicated command. Must be deterministic. |
 | `@KurinQuery` | method | Read-only handler, answered by the leader (or locally with `ReadConsistency.LOCAL`). |
 | `@KurinSnapshot` / `@KurinRestore` | method | Capture the state of a service as `byte[]` (no parameters) and replace it from one (`byte[]` parameter). One of each per service. |
-| `@KurinService("name")` | class | Stable name of the service in snapshots; without it the class name is used, and renaming the class orphans its snapshot. |
+| `@KurinService("name")` | class | Stable name of the service in snapshots; without it the class name is used, and renaming the class orphans its snapshot. `stateless = true` declares that its commands keep no state, so it needs no snapshot methods. |
 | `@KurinType(id = N)` | class | Explicit wire id (`N >= 1000`) of a type; without it the id is derived from the class name, and renaming the class changes it. |
 
 ## Guarantees
@@ -77,6 +77,37 @@ whole node. Any node accepts commands and queries: a follower forwards them to t
   index, term, timestamp and request id of the command being applied.
 - With `storage(MEMORY)` nothing survives a restart, and a restarted node can vote twice in a term. Tests only.
 
+## Services and snapshots
+
+The log is compacted every `snapshotThresholdEntries` applied entries (10 000 by default): the state of the
+services is captured and the entries are dropped. A node that restarts, or one that was away for longer than the
+log reaches back, gets its state from that snapshot. A service that changes state in its command handlers and
+cannot be captured would come back empty, so the node refuses to start with one:
+
+| The service | Declare it as |
+|---|---|
+| keeps state built by its commands | `@KurinSnapshot byte[] snapshot()` and `@KurinRestore void restore(byte[])` |
+| keeps nothing: commands only return a result or act through listeners | `@KurinService(stateless = true)` |
+
+`KurinNode.Builder.allowServicesWithoutSnapshot(true)` turns the refusal into a warning for all services.
+
+## When the disk fails
+
+A node that gets an I/O error from its log, its snapshot store or its term/vote file cannot keep the promises a
+Raft node makes, so it leaves the cluster instead of going quiet:
+
+- a leader steps down; the node does not vote, does not stand for election and refuses entries and snapshots;
+- commands and queries submitted to it, local reads included, fail with `KurinStorageException`, as do requests
+  that were waiting on it;
+- `status().storageFailed()` is true and `status().storageFailure()` gives the reason.
+
+The other nodes treat it as a node that is down: with a majority left they elect a leader and carry on. The
+failed node tries its storage again after 100 ms, then 200 ms, doubling up to 10 s
+(`RaftConfig.storageRetryMinMs` / `storageRetryMaxMs`). An attempt rewrites the log from memory into a fresh file
+and flushes it, because data lost by a failed flush is not brought back by flushing again. When it succeeds, the
+node returns as a follower and catches up. Until then nothing it could not store was acknowledged or counted
+towards a commit.
+
 ## Errors
 
 All failures are subclasses of `KurinException`:
@@ -89,6 +120,7 @@ All failures are subclasses of `KurinException`:
 | `KurinTimeoutException` | no answer in time | unknown |
 | `KurinCommandFailedException` | the handler threw; the same on all nodes | applied, failed |
 | `KurinSerializationException` | a type is not registered or cannot be encoded | not applied |
+| `KurinStorageException` | this node cannot write its durable state and is out of the cluster | not applied if refused at submission; unknown if it was already in flight |
 | `KurinRemoteException` | the other node failed to process a request | unknown |
 
 ## Threading

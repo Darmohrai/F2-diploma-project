@@ -79,7 +79,8 @@ With fewer than a majority alive nothing can be committed: commands fail with `K
   `KurinCommandContext.current().timestampMs()`: the leader's clock when the command was logged, the same on every
   node. A handler that writes to a database writes N times, once per node; keep such writes outside of commands and
   use `@KurinCacheEvict` on the ordinary method instead.
-- A service that keeps state must implement `@KurinSnapshot` / `@KurinRestore`, or a node that catches up from a
+- A service that keeps state must implement `@KurinSnapshot` / `@KurinRestore`; the node refuses to start with a
+  service that handles commands and has neither these methods nor `@KurinService(stateless = true)`. Without them a node that catches up from a
   snapshot loses that state.
 
 ### Reads
@@ -173,6 +174,9 @@ Durations accept ISO-8601 (`PT5S`) and simple forms (`5s`, `100ms`).
 | `max-inflight-appends` | int | `1` | Replication requests in flight per follower. |
 | `snapshot-threshold` | long | `10000` | Applied entries between snapshots. |
 | `dedup-cache-size` | int | `10000` | Request ids remembered for deduplication. |
+| `allow-services-without-snapshot` | boolean | `false` | Start even if a service with command handlers has no snapshot methods and is not declared stateless. Its state is then lost after log compaction. |
+| `storage-retry-min` | Duration | `100ms` | Delay before the first attempt to use the storage again after an I/O failure; doubles with every failed attempt. |
+| `storage-retry-max` | Duration | `10s` | Longest delay between such attempts. |
 | `cluster-secret` | String | - | Enables HMAC authentication between nodes. |
 | `idle-timeout` | Duration | `30s` | Idle node connections are closed after this. |
 | `tls.enabled` | boolean | `false` | Mutual TLS between nodes. |

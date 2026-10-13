@@ -53,4 +53,16 @@ public interface KurinObserver {
 
     default void onSnapshot(long durationNanos, long bytes) {
     }
+
+    /**
+     * The node could not write its durable state and left the cluster until the storage works again.
+     */
+    default void onStorageFailure(Throwable cause) {
+    }
+
+    /**
+     * The storage works again; the node is back as a follower.
+     */
+    default void onStorageRecovered() {
+    }
 }

@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit;
  * Publishes the measurements of the Raft core as Micrometer meters.
  * <p>
  * Gauges: {@code kurin.raft.role} (0 follower, 1 candidate, 2 leader), {@code kurin.raft.term},
- * {@code kurin.raft.commit.index}, {@code kurin.raft.applied.index}, {@code kurin.raft.log.entries}.
+ * {@code kurin.raft.commit.index}, {@code kurin.raft.applied.index}, {@code kurin.raft.log.entries},
+ * {@code kurin.raft.storage.failed} (0 or 1).
  * Counters: {@code kurin.raft.elections{result}}, {@code kurin.raft.leader.changes}.
  * Timers: {@code kurin.raft.commit.latency}, {@code kurin.raft.apply.duration{type}},
  * {@code kurin.raft.rpc.latency{type,peer}}, {@code kurin.raft.snapshot.duration}.
@@ -51,6 +52,8 @@ public class KurinRaftMetrics implements KurinObserver {
         Gauge.builder("kurin.raft.term", node, n -> n.status().term()).register(registry);
         Gauge.builder("kurin.raft.commit.index", node, n -> n.status().commitIndex()).register(registry);
         Gauge.builder("kurin.raft.applied.index", node, n -> n.status().lastApplied()).register(registry);
+        Gauge.builder("kurin.raft.storage.failed", node, n -> n.status().storageFailed() ? 1 : 0)
+                .description("1 while the node is out of the cluster because it cannot write its durable state").register(registry);
         Gauge.builder("kurin.raft.log.entries", node, KurinNode::logEntries)
                 .description("Entries held in the log, not yet replaced by a snapshot").register(registry);
     }

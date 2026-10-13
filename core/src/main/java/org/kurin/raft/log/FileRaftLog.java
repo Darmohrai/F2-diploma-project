@@ -70,7 +70,7 @@ public class FileRaftLog implements RaftLog {
         try {
             Files.createDirectories(directory);
             readMeta();
-            recover();
+            readSegments();
             durableIndex = getLastLogIndex();
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot open the Raft log in " + directory, e);
@@ -90,7 +90,7 @@ public class FileRaftLog implements RaftLog {
         }
     }
 
-    private void recover() throws IOException {
+    private void readSegments() throws IOException {
         TreeMap<Long, Path> found = new TreeMap<>();
         try (Stream<Path> files = Files.list(directory)) {
             for (Path file : (Iterable<Path>) files::iterator) {
@@ -235,6 +235,51 @@ public class FileRaftLog implements RaftLog {
         }
         unsynced = false;
         durableIndex = getLastLogIndex();
+    }
+
+    /**
+     * After a failed write the files can hold a torn record, lack a segment or carry a base that was never
+     * applied, and data that a failed flush dropped is not written by flushing again. So the files are not
+     * repaired: the entries held in memory are written out afresh as one segment, flushed, and only then put
+     * in place of everything else.
+     */
+    @Override
+    public void recover() {
+        try {
+            if (activeChannel != null) {
+                try {
+                    activeChannel.close();
+                } catch (IOException e) {
+                    log.debug("Closing the damaged segment of the Raft log in {} failed: {}", directory, e.toString());
+                }
+                activeChannel = null;
+            }
+            writeMeta(baseIndex, baseTerm);
+            Path rewritten = null;
+            if (!entries.isEmpty()) {
+                rewritten = segmentPath(baseIndex + 1);
+                writeSegmentAtomically(rewritten, entries);
+            }
+            try (Stream<Path> files = Files.list(directory)) {
+                for (Path file : (Iterable<Path>) files::iterator) {
+                    String name = file.getFileName().toString();
+                    boolean segment = name.startsWith(SEGMENT_PREFIX) && name.endsWith(SEGMENT_SUFFIX);
+                    if ((segment && !file.equals(rewritten)) || name.endsWith(".tmp")) {
+                        Files.delete(file);
+                    }
+                }
+            }
+            segments.clear();
+            if (rewritten != null) {
+                segments.put(baseIndex + 1, rewritten);
+            }
+            reopenActive();
+        } catch (IOException e) {
+            throw new UncheckedIOException("The Raft log in " + directory + " still cannot be written", e);
+        }
+        unsynced = false;
+        durableIndex = getLastLogIndex();
+        log.info("Raft log in {} was rewritten from memory: {} entries after index {}", directory, entries.size(), baseIndex);
     }
 
     @Override

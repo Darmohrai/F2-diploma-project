@@ -134,10 +134,11 @@ public class LeaderRole implements NodeRole, RaftState.LeaseHolder {
         String hint = successor != null && !successor.equals(context.getLocalAddress()) ? successor.asString() : null;
         String self = context.getLocalAddress().asString();
         // The entries may still commit under the next leader: the caller can retry with the same request id
-        context.failPendingClientRequests(new KurinNotLeaderException(
+        context.failPendingClientRequests(context.storageFailed() ? context.storageUnavailable() : new KurinNotLeaderException(
                 "Node " + self + " lost leadership before the command was committed", hint));
 
-        KurinNotLeaderException readFailure = new KurinNotLeaderException("Node " + self + " lost leadership before the query was answered", hint);
+        RuntimeException readFailure = context.storageFailed() ? context.storageUnavailable()
+                : new KurinNotLeaderException("Node " + self + " lost leadership before the query was answered", hint);
         pendingReads.forEach(read -> read.future().completeExceptionally(readFailure));
         pendingReads.clear();
         List<Runnable> waiting = new ArrayList<>(awaitingNoop);

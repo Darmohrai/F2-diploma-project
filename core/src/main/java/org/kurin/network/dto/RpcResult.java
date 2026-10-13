@@ -7,6 +7,7 @@ import org.kurin.api.exception.KurinNotLeaderException;
 import org.kurin.api.exception.KurinNotStartedException;
 import org.kurin.api.exception.KurinRemoteException;
 import org.kurin.api.exception.KurinSerializationException;
+import org.kurin.api.exception.KurinStorageException;
 import org.kurin.api.exception.KurinTimeoutException;
 import org.kurin.network.model.NodeAddress;
 
@@ -27,6 +28,7 @@ public record RpcResult(boolean ok, Object value, String errorType, String error
     public static final String ERROR_COMMAND_FAILED = "COMMAND_FAILED";
     public static final String ERROR_SERIALIZATION = "SERIALIZATION";
     public static final String ERROR_NOT_STARTED = "NOT_STARTED";
+    public static final String ERROR_STORAGE = "STORAGE";
     public static final String ERROR_REMOTE = "REMOTE";
 
     public static RpcResult success(Object value) {
@@ -54,6 +56,9 @@ public record RpcResult(boolean ok, Object value, String errorType, String error
         if (cause instanceof KurinNotStartedException) {
             return error(ERROR_NOT_STARTED, cause.getMessage());
         }
+        if (cause instanceof KurinStorageException) {
+            return error(ERROR_STORAGE, cause.getMessage());
+        }
         if (cause instanceof KurinException) {
             return error(ERROR_REMOTE, cause.getMessage());
         }
@@ -75,6 +80,7 @@ public record RpcResult(boolean ok, Object value, String errorType, String error
             case ERROR_COMMAND_FAILED -> new KurinCommandFailedException(String.valueOf(value), errorMessage);
             case ERROR_SERIALIZATION -> new KurinSerializationException(errorMessage);
             case ERROR_NOT_STARTED -> new KurinNotStartedException(errorMessage);
+            case ERROR_STORAGE -> new KurinStorageException(errorMessage);
             default -> new KurinRemoteException(errorMessage);
         };
     }

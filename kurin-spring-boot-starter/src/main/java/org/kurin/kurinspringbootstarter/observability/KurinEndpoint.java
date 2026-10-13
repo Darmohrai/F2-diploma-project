@@ -49,6 +49,9 @@ public class KurinEndpoint {
         details.put("lastApplied", status.lastApplied());
         details.put("lastLogIndex", status.lastLogIndex());
         details.put("logEntries", node.logEntries());
+        if (status.storageFailed()) {
+            details.put("storageFailure", status.storageFailure());
+        }
 
         Map<String, Object> peers = new LinkedHashMap<>();
         Map<String, java.time.Duration> contacts = node.peerContactAges();

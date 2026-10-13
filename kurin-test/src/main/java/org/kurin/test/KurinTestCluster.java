@@ -45,6 +45,7 @@ public final class KurinTestCluster implements AutoCloseable {
         private volatile KurinNode kurin;
         private volatile List<Object> services = List.of();
         private volatile boolean running;
+        private final FaultInjectingStorage storageFaults = new FaultInjectingStorage();
 
         private Node(int index, int port) {
             this.index = index;
@@ -129,7 +130,8 @@ public final class KurinTestCluster implements AutoCloseable {
                 .bindHost(HOST)
                 .storage(storage)
                 .addPeers(nodes.stream().map(Node::nodeId).toArray(String[]::new))
-                .transportDecorator(transport -> new FaultInjectingTransport(node.nodeId(), transport, faults, scheduler));
+                .transportDecorator(transport -> new FaultInjectingTransport(node.nodeId(), transport, faults, scheduler))
+                .storageDecorator(node.storageFaults::wrap);
         if (storage == RaftConfig.StorageType.FILE) {
             builder.dataDir(dataDir.resolve("node-" + node.index));
         }
@@ -188,6 +190,11 @@ public final class KurinTestCluster implements AutoCloseable {
         return nodes.stream().filter(Node::isRunning).toList();
     }
 
+    // Running nodes that take part in the cluster: a node with failed storage is up but applies nothing
+    private List<Node> workingNodes() {
+        return runningNodes().stream().filter(node -> !node.status().storageFailed()).toList();
+    }
+
     /**
      * @return the running node with established leadership (valid lease, first entry of its term committed)
      * in the highest term, if there is one
@@ -225,7 +232,7 @@ public final class KurinTestCluster implements AutoCloseable {
         long term = leader.get().status().term();
         // Nodes cut off from the leader by a partition cannot learn about it and are not waited for
         List<Node> reachable = runningNodes().stream()
-                .filter(node -> !faults.isBlocked(leaderId, node.nodeId()))
+                .filter(node -> !faults.isBlocked(leaderId, node.nodeId()) && !node.status().storageFailed())
                 .toList();
         boolean acknowledged = reachable.stream()
                 .allMatch(node -> leaderId.equals(node.status().leaderId()) && node.status().term() == term);
@@ -234,17 +241,17 @@ public final class KurinTestCluster implements AutoCloseable {
     }
 
     /**
-     * Waits until every running node has applied at least the given log index.
+     * Waits until every running node whose storage works has applied at least the given log index.
      */
     public void awaitApplied(long logIndex, Duration timeout) {
         Awaitility.await("entry " + logIndex + " applied on all running nodes")
                 .atMost(timeout)
                 .pollInterval(Duration.ofMillis(10))
-                .until(() -> runningNodes().stream().allMatch(node -> node.status().lastApplied() >= logIndex));
+                .until(() -> workingNodes().stream().allMatch(node -> node.status().lastApplied() >= logIndex));
     }
 
     /**
-     * Waits until every running node has applied everything that is in the log of any running node:
+     * Waits until every running node whose storage works has applied everything that is in the log of any of them:
      * all commands acknowledged so far are visible on all of them.
      */
     public void awaitInSync(Duration timeout) {
@@ -252,7 +259,7 @@ public final class KurinTestCluster implements AutoCloseable {
                 .atMost(timeout)
                 .pollInterval(Duration.ofMillis(10))
                 .until(() -> {
-                    List<RaftStatus> statuses = runningNodes().stream().map(Node::status).toList();
+                    List<RaftStatus> statuses = workingNodes().stream().map(Node::status).toList();
                     long lastLogIndex = statuses.stream().mapToLong(RaftStatus::lastLogIndex).max().orElse(0);
                     return statuses.stream().allMatch(status -> status.lastApplied() >= lastLogIndex);
                 });
@@ -287,6 +294,28 @@ public final class KurinTestCluster implements AutoCloseable {
      */
     public void heal() {
         faults.heal();
+    }
+
+    /**
+     * Makes every write of the node to its durable storage fail from now on, as a full or dying disk would.
+     * The node notices at its next write and then leaves the cluster ({@code status().storageFailed()}).
+     */
+    public void breakStorage(Node node) {
+        node.storageFaults.setBroken(true);
+    }
+
+    /**
+     * Makes the storage of the node work again. The node finds out at its next retry and returns as a follower.
+     */
+    public void repairStorage(Node node) {
+        node.storageFaults.setBroken(false);
+    }
+
+    /**
+     * @return the switch of the node's storage faults, to break its log, snapshots or metadata separately
+     */
+    public FaultInjectingStorage storageFaults(Node node) {
+        return node.storageFaults;
     }
 
     public static final class Builder {

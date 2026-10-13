@@ -16,7 +16,8 @@ import java.time.Duration;
  *       maximum election timeout;</li>
  *   <li>{@code OUT_OF_SERVICE}: it has known no leader for longer than the configured threshold, so commands
  *       submitted here cannot succeed;</li>
- *   <li>{@code UNKNOWN} in between: an election is under way or the leader was just lost.</li>
+ *   <li>{@code UNKNOWN} in between: an election is under way or the leader was just lost;</li>
+ *   <li>{@code DOWN}: it cannot write its durable state and has left the cluster until the storage works again.</li>
  * </ul>
  */
 public class KurinHealthIndicator implements HealthIndicator {
@@ -37,6 +38,9 @@ public class KurinHealthIndicator implements HealthIndicator {
         Status result;
         if (!node.isStarted()) {
             result = Status.OUT_OF_SERVICE;
+        } else if (status.storageFailed()) {
+            // The node is running but takes no part in the cluster and serves no request
+            result = Status.DOWN;
         } else if (status.role() == RaftRole.LEADER) {
             // A leader that lost its lease is about to step down
             result = node.leadership().isPresent() ? Status.UP : Status.UNKNOWN;

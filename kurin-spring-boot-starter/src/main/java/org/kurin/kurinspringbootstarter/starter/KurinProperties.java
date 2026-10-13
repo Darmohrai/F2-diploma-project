@@ -81,6 +81,19 @@ public class KurinProperties {
      */
     private int dedupCacheSize = 10_000;
     /**
+     * Start even if a service handles commands, is not declared stateless and has no snapshot methods.
+     * The state of such a service is lost on nodes that restart or catch up after the log was compacted.
+     */
+    private boolean allowServicesWithoutSnapshot = false;
+    /**
+     * Delay before the first attempt to use the storage again after an I/O failure. Doubles up to storage-retry-max.
+     */
+    private Duration storageRetryMin = Duration.ofMillis(100);
+    /**
+     * Longest delay between attempts to use a failed storage again.
+     */
+    private Duration storageRetryMax = Duration.ofSeconds(10);
+    /**
      * Shared secret. When set, nodes authenticate each other with an HMAC during the handshake.
      */
     private String clusterSecret;
@@ -141,6 +154,15 @@ public class KurinProperties {
 
     public int getDedupCacheSize() { return dedupCacheSize; }
     public void setDedupCacheSize(int dedupCacheSize) { this.dedupCacheSize = dedupCacheSize; }
+
+    public boolean isAllowServicesWithoutSnapshot() { return allowServicesWithoutSnapshot; }
+    public void setAllowServicesWithoutSnapshot(boolean allowServicesWithoutSnapshot) { this.allowServicesWithoutSnapshot = allowServicesWithoutSnapshot; }
+
+    public Duration getStorageRetryMin() { return storageRetryMin; }
+    public void setStorageRetryMin(Duration storageRetryMin) { this.storageRetryMin = storageRetryMin; }
+
+    public Duration getStorageRetryMax() { return storageRetryMax; }
+    public void setStorageRetryMax(Duration storageRetryMax) { this.storageRetryMax = storageRetryMax; }
 
     public String getClusterSecret() { return clusterSecret; }
     public void setClusterSecret(String clusterSecret) { this.clusterSecret = clusterSecret; }

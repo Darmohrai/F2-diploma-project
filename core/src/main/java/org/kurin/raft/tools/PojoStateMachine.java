@@ -56,6 +56,16 @@ public class PojoStateMachine implements StateMachine {
      * @throws IllegalStateException if a handler has an unsupported signature or two handlers accept the same type
      */
     public PojoStateMachine(List<Service> services) {
+        this(services, false);
+    }
+
+    /**
+     * @param allowServicesWithoutSnapshot accept, with a warning, services that handle commands, are not declared
+     *                                     stateless and have no snapshot methods
+     * @throws IllegalStateException if a handler has an unsupported signature, two handlers accept the same type,
+     *                               or a service that keeps state cannot be snapshotted
+     */
+    public PojoStateMachine(List<Service> services, boolean allowServicesWithoutSnapshot) {
         Map<String, Class<?>> serviceIds = new HashMap<>();
         for (Service service : services) {
             String serviceId = serviceId(service.type());
@@ -73,10 +83,22 @@ public class PojoStateMachine implements StateMachine {
                 throw new IllegalStateException("Service " + service.type().getName()
                         + " must declare both a @KurinSnapshot and a @KurinRestore method, or neither");
             }
-            if (hasCommands && !snapshotHandlers.containsKey(serviceId)) {
-                log.warn("Service {} handles commands but has no @KurinSnapshot/@KurinRestore methods. Whatever state its "
-                        + "commands build is lost on nodes that catch up from a snapshot after the log is compacted.",
-                        service.type().getName());
+            KurinService declared = service.type().getAnnotation(KurinService.class);
+            boolean stateless = declared != null && declared.stateless();
+            if (stateless && snapshotHandlers.containsKey(serviceId)) {
+                throw new IllegalStateException("Service " + service.type().getName() + " is declared stateless but has "
+                        + "@KurinSnapshot/@KurinRestore methods. Remove 'stateless = true' or the snapshot methods.");
+            }
+            if (hasCommands && !stateless && !snapshotHandlers.containsKey(serviceId)) {
+                String problem = "Service " + service.type().getName() + " handles commands but has no @KurinSnapshot/"
+                        + "@KurinRestore methods. Once the log is compacted, whatever state its commands built is missing "
+                        + "on every node that restarts or catches up from a snapshot.";
+                if (!allowServicesWithoutSnapshot) {
+                    throw new IllegalStateException(problem + " Add the two methods; or, if the commands keep nothing in "
+                            + "the memory of the service, declare it with @KurinService(stateless = true); or accept the "
+                            + "loss for all services with allowServicesWithoutSnapshot (kurin.node.allow-services-without-snapshot=true).");
+                }
+                log.warn("{} This is allowed by configuration.", problem);
             }
         }
     }
@@ -158,7 +180,7 @@ public class PojoStateMachine implements StateMachine {
 
     private static String serviceId(Class<?> type) {
         KurinService named = type.getAnnotation(KurinService.class);
-        return named != null ? named.value() : type.getName();
+        return named != null && !named.value().isEmpty() ? named.value() : type.getName();
     }
 
     /**

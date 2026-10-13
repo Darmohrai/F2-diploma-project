@@ -31,6 +31,7 @@ try (KurinTestCluster cluster = KurinTestCluster.builder()
 | `delay(from, to, d)`, `dropRate(from, to, rate)` | One-directional faults between two nodes. |
 | `heal()` | Removes all faults. |
 | `kill(node)`, `restart(node)` | Stops a node and starts it again; with `storage(FILE)` and a `dataDir` its state survives. |
+| `breakStorage(node)`, `repairStorage(node)` | Makes every write of the node to its log, snapshots and term/vote fail, and work again. `storageFaults(node)` breaks the three separately. |
 | `node.service(Type.class)` | The service instance of that node, to inspect its state. |
 
 `storage(...)` defaults to memory; use `RaftConfig.StorageType.FILE` with `dataDir(tempDir)` for restart tests.

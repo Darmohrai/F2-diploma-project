@@ -43,6 +43,36 @@ class FileRaftLogTest {
     }
 
     @Test
+    void recoverRewritesDamagedFilesFromMemory() throws IOException {
+        try (FileRaftLog log = open()) {
+            append(log, 1, 30, 2);
+            log.compact(10, 2);
+            log.append(entry(31, 2)); // appended, never flushed
+
+            // What a failed disk leaves behind: a torn record at the end and a segment that is gone
+            List<Path> segments = segmentFiles();
+            assertThat(segments).hasSizeGreaterThan(2);
+            Files.write(segments.getLast(), new byte[]{0, 0, 0, 9, 1, 2, 3}, StandardOpenOption.APPEND);
+            Files.delete(segments.get(1));
+
+            log.recover();
+
+            assertThat(log.getDurableIndex()).isEqualTo(31);
+            assertThat(segmentFiles()).hasSize(1);
+            log.append(entry(32, 2));
+            log.sync();
+        }
+        try (FileRaftLog reopened = open()) {
+            assertThat(reopened.getBaseIndex()).isEqualTo(10);
+            assertThat(reopened.getBaseTerm()).isEqualTo(2);
+            assertThat(reopened.getLastLogIndex()).isEqualTo(32);
+            assertThat(reopened.getEntriesFrom(11)).extracting(LogEntry::index)
+                    .containsExactlyElementsOf(java.util.stream.LongStream.rangeClosed(11, 32).boxed().toList());
+            assertThat(reopened.getEntry(31).command()).isEqualTo("command-31");
+        }
+    }
+
+    @Test
     void entriesSurviveReopen() throws IOException {
         try (FileRaftLog log = open()) {
             append(log, 1, 50, 3);

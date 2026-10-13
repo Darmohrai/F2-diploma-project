@@ -92,4 +92,18 @@ public class FileSnapshotStore implements SnapshotStore {
         }
         this.cached = snapshot;
     }
+
+    @Override
+    public void verifyWritable() {
+        Path probe = tempFile.resolveSibling(tempFile.getFileName() + ".probe");
+        try {
+            try (FileChannel channel = FileChannel.open(probe, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                channel.write(ByteBuffer.wrap(new byte[]{1}));
+                channel.force(true);
+            }
+            Files.delete(probe);
+        } catch (IOException e) {
+            throw new UncheckedIOException("The snapshot store in " + file.getParent() + " does not accept writes", e);
+        }
+    }
 }

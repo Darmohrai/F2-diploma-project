@@ -271,3 +271,43 @@ Nothing here breaks existing code unless it implements or constructs the types b
 `README.md` in the root and in every module now states what is and is not guaranteed. Two claims of the 1.0
 documentation were wrong and are removed: serialization is not zero-copy (messages are encoded by Kryo into
 buffers and copied), and election timeouts are randomized, not deterministic.
+
+---
+
+# 1.1.0 → 1.1.1
+
+## Services without snapshot methods no longer start
+
+A bean or service with `@KurinCommand` handlers and no `@KurinSnapshot` / `@KurinRestore` methods was accepted
+with a warning. It now fails the start:
+
+```
+Service com.example.Counters handles commands but has no @KurinSnapshot/@KurinRestore methods. ...
+```
+
+Pick one:
+
+- the service keeps state: add the two methods (`byte[] snapshot()` and `void restore(byte[])`);
+- its commands keep nothing in the service (they only return a result, or act through cache annotations and
+  state machine listeners): declare it `@KurinService(stateless = true)`;
+- you accept the loss for now: `kurin.node.allow-services-without-snapshot=true`
+  (`KurinNode.Builder.allowServicesWithoutSnapshot(true)`), which logs a warning per service.
+
+`@KurinService.value` now has a default (empty: the class name). `@KurinService("name")` works as before.
+
+## Storage failures
+
+- New exception `KurinStorageException` (a `KurinException`). A node that cannot write its log, snapshot or
+  term/vote file refuses commands and queries with it until the storage works again. Code that distinguishes
+  Kurin exceptions should treat it like `KurinNotLeaderException`: the request can be retried, on another node
+  or later, with the same request id.
+- `RaftStatus` has a new component `storageFailure` (null while storage works) and `storageFailed()`. The
+  eight-argument constructor is kept.
+- `KurinObserver` has two new default methods, `onStorageFailure` and `onStorageRecovered`.
+- `RaftLog` has a new default method `recover()`, `SnapshotStore` a new default method `verifyWritable()`. A custom
+  implementation backed by files should implement them; one that reports I/O failures should throw
+  `UncheckedIOException`. `FilePersistentMetadata.save` now throws `UncheckedIOException` instead of
+  `IllegalStateException`.
+- The health contributor `kurin` reports `DOWN` while the storage of the node is failed. A liveness probe that
+  includes it will restart the instance; if the disk is expected to come back, keep it in the readiness group only.
+- New properties `kurin.node.storage-retry-min` (100 ms) and `kurin.node.storage-retry-max` (10 s).

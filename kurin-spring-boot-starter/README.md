@@ -73,6 +73,7 @@ Meters (`MeterRegistry`):
 |---|---|---|
 | `kurin.raft.role` | gauge: 0 follower, 1 candidate, 2 leader | |
 | `kurin.raft.term`, `kurin.raft.commit.index`, `kurin.raft.applied.index`, `kurin.raft.log.entries` | gauge | |
+| `kurin.raft.storage.failed` | gauge: 1 while the node is out of the cluster because its storage failed | |
 | `kurin.raft.elections` | counter | `result` = `started`, `won`, `lost` |
 | `kurin.raft.leader.changes` | counter | |
 | `kurin.raft.commit.latency` | timer: append on the leader to commit | |
@@ -88,7 +89,8 @@ to the leader, so the leader's spans join the caller's trace.
 Actuator:
 
 - health `kurin`: `UP` with a known leader; `UNKNOWN` while there is none; `OUT_OF_SERVICE` once that lasts longer
-  than `kurin.node.health.no-leader-threshold`. Details: role, term, leader, commit and applied index, peers with the
+  than `kurin.node.health.no-leader-threshold`; `DOWN` while the node cannot write its durable state (detail
+  `storageFailure`). Details: role, term, leader, commit and applied index, peers with the
   time since last contact.
 - `/actuator/kurin` (expose it with `management.endpoints.web.exposure.include=kurin`): the node section plus the
   sections contributed by other starters (`coordination`, `caches`).
