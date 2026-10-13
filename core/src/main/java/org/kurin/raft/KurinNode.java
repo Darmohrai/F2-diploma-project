@@ -357,6 +357,16 @@ public class KurinNode {
     }
 
     /**
+     * @return whether a command or a linearizable query submitted here can reach the leader right now. Unlike
+     * {@link #status()}, which tells what this node heard, this tells what it can send.
+     */
+    public CommandPath commandPath() {
+        RaftNode node = internalNode;
+        boolean started = node != null && lifecycle == Lifecycle.STARTED;
+        return CommandPath.of(started, status(), leadership().isPresent(), peer -> node.reachability(peer));
+    }
+
+    /**
      * Starts a span in the tracing system of the node, for modules built on top of it.
      *
      * @return a span that must be ended; a no-op one if no tracing is connected or the node is not started

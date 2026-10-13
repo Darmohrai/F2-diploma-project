@@ -120,6 +120,13 @@ independent of registration order, and is frozen at start. Its fingerprint is pa
 together with the cluster name and an optional HMAC. A new RPC type goes into `BuiltinTypes` and the sealed
 `RaftRpc` switch in `RaftDispatcher`.
 
+**Transport:** `ConnectionManager` keeps one outbound connection per peer, with a pause after a failed attempt.
+During the pause requests of the Raft protocol fail fast; `ClientCommandRequest` / `ClientQueryRequest` (work
+forwarded to the leader) wait for the next attempt, all on one future per peer. An inbound message of a peer
+(`NettyHandler.signOfLife`, on the I/O thread) lifts the pause once per failure streak. `KurinNode.commandPath()`
+reports the outbound path to the leader; the health status does not depend on it. A new payload type that carries
+client work must be added to `KurinNetworkClient.carriesClientWork`.
+
 **Errors:** everything public throws a subclass of `KurinException`; across the wire failures travel in
 `RpcResult`.
 

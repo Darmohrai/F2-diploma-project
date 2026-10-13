@@ -234,6 +234,9 @@ class KurinApplicationTest {
         assertThat(health).contains("\"kurin\":", "\"kurinCache\":", "\"kurinRouting\":", "\"db\":",
                 "\"eu.primary\":", "\"eu.replica\":", "\"us.primary\":", "\"us.replica\":");
 
+        // Every instance says whether what it submits can reach the leader, apart from its status
+        assertThat(health).contains("\"commandPath\":");
+
         String kurin = get(0, "/actuator/kurin").body();
         assertThat(kurin).contains("\"node\":", "\"coordination\":", "\"caches\":", "\"routing\":",
                 "\"nodeId\":\"" + node(0).nodeId() + "\"");

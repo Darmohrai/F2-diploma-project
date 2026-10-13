@@ -102,7 +102,9 @@ class KurinActuatorAdapterTest {
 
             Health up = indicator.health();
             assertThat(up.getStatus()).isEqualTo(Status.UP);
-            assertThat(up.getDetails()).containsEntry("role", "LEADER").containsEntry("leaderId", node.nodeId());
+            assertThat(up.getDetails()).containsEntry("role", "LEADER").containsEntry("leaderId", node.nodeId())
+                    // An established leader is its own way to the leader
+                    .containsEntry("commandPath", "UP");
 
             NodeApp.STORAGE.setBroken(true);
             assertThatThrownBy(() -> context.getBean(KurinTemplate.class).submitCommand(new Ping("x")).get(5, TimeUnit.SECONDS))

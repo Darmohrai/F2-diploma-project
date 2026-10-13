@@ -14,6 +14,7 @@ import org.kurin.network.dto.ClusterMessage;
 import org.kurin.network.dto.Hello;
 import org.kurin.network.dto.RpcResult;
 import org.kurin.network.model.MessageType;
+import org.kurin.network.model.NodeAddress;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,6 +42,8 @@ public class NettyHandler extends SimpleChannelInboundHandler<ClusterMessage> {
     private final boolean outbound;
     private final String nonce = UUID.randomUUID().toString();
     private boolean authenticated;
+    // The node at the other end of an inbound connection, once it has identified itself
+    private NodeAddress inboundPeer;
 
     public NettyHandler(NetworkContext context, boolean outbound) {
         this.context = context;
@@ -94,7 +97,31 @@ public class NettyHandler extends SimpleChannelInboundHandler<ClusterMessage> {
             return;
         }
         authenticated = true;
+        inboundPeer = addressOf(remote.nodeId());
+        signOfLife();
         ctx.writeAndFlush(new ClusterMessage(MessageType.HELLO_ACK, 0, localHello(remote.nonce())));
+    }
+
+    private static NodeAddress addressOf(String nodeId) {
+        try {
+            return NodeAddress.parse(nodeId);
+        } catch (IllegalArgumentException e) {
+            // Not the address of a node: there is no outbound connection it could tell anything about
+            log.debug("Node id '{}' is not a node address", nodeId);
+            return null;
+        }
+    }
+
+    /**
+     * The peer proved, with a message that passed the handshake, that it is running and can reach this node.
+     * Outbound connection attempts to it need not wait any longer. Runs on the I/O thread of the connection;
+     * the Raft thread is not involved. A response needs no such call: it arrives over the outbound connection
+     * itself, which is then open.
+     */
+    private void signOfLife() {
+        if (inboundPeer != null) {
+            context.getClient().peerAlive(inboundPeer);
+        }
     }
 
     private void onHelloAck(ChannelHandlerContext ctx, Hello remote) {
@@ -132,6 +159,7 @@ public class NettyHandler extends SimpleChannelInboundHandler<ClusterMessage> {
             respond(ctx, msg.getCorrelationId(), RpcResult.failure(msg.getDecodeError()));
             return;
         }
+        signOfLife();
         CompletableFuture<Object> result;
         try {
             result = context.getDispatcher().dispatchAsync(msg);

@@ -7,6 +7,12 @@ import java.util.Map;
 /**
  * Health of a node as a member of its cluster, in a form that depends on no monitoring library. Adapters turn
  * it into the health model of whatever the application uses.
+ * <p>
+ * The status says whether the node is a working member: it leads, or it follows a leader it hears from. It
+ * does not say that a command submitted here gets through at this moment; that is the detail
+ * {@code commandPath} ({@link CommandPath}). The two differ for a moment after an election, and for as long as a
+ * follower can hear its leader but not connect to it. The status is kept apart from that on purpose: an instance
+ * that follows a leader serves local reads and must not be taken out of rotation for want of an idle connection.
  *
  * @param details facts about the node, in a stable order, with values a JSON writer can handle
  */
@@ -74,6 +80,7 @@ public record KurinNodeHealth(Status status, Map<String, Object> details) {
         details.put("term", status.term());
         details.put("leaderId", status.leaderId());
         details.put("leadershipEstablished", node.leadership().isPresent());
+        details.put("commandPath", node.commandPath().name());
         details.put("commitIndex", status.commitIndex());
         details.put("lastApplied", status.lastApplied());
         details.put("lastLogIndex", status.lastLogIndex());

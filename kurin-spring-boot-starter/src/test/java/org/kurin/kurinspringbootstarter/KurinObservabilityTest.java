@@ -166,7 +166,8 @@ class KurinObservabilityTest {
                     // Actuator
                     KurinNodeHealth health = KurinNodeHealth.of(node, Duration.ofSeconds(10));
                     assertThat(health.status()).isEqualTo(Status.UP);
-                    assertThat(health.details()).containsEntry("role", "LEADER").containsEntry("leaderId", node.nodeId());
+                    assertThat(health.details()).containsEntry("role", "LEADER").containsEntry("leaderId", node.nodeId())
+                            .containsEntry("commandPath", "UP");
 
                     Map<String, Object> endpoint = context.getBean(KurinEndpoint.class).kurin();
                     assertThat(endpoint).containsKeys("node", "extra");

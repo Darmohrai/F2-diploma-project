@@ -18,7 +18,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -62,13 +61,8 @@ class LockOutcomeTest {
             String leaderId = node(instances.get(0)).status().leaderId();
             return leaders == 1 && leaderId != null && leaderId.equals(node(instances.get(1)).status().leaderId());
         });
-        // The instance that started first may still be pausing before its next attempt to connect to the other
-        await("commands of both instances reach the leader").atMost(SOON).ignoreExceptions().until(() -> {
-            for (ConfigurableApplicationContext instance : instances) {
-                node(instance).submitQuery(new Counters.Read()).get(5, TimeUnit.SECONDS);
-            }
-            return true;
-        });
+        // Nothing more is waited for: the instance that started first found its peer away at first, and its
+        // requests must get through all the same as soon as it follows the leader
     }
 
     @AfterEach

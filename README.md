@@ -151,6 +151,23 @@ With fewer than a majority alive nothing can be committed: commands fail with `K
 | `LEASE` | the same, assuming clocks drift less than the lease margin | none | the leader holds no valid lease |
 | `LOCAL` | whatever this node has applied; may be arbitrarily stale | none | never |
 
+### Connections between nodes
+
+Every node keeps one outbound connection per peer and answers on the connections its peers open. After a failed
+connection attempt the next one waits (50 ms at first, doubling up to 2 s).
+
+- **A command or query submitted on a follower waits for the connection to the leader**, within its own timeout.
+  It fails with `KurinRemoteException`, which names the cause, only when an attempt to connect has failed. It
+  never fails merely because an earlier attempt failed and the next was not due yet.
+- **Hearing from a peer ends the wait.** A node that started before its peer, and found it away, connects to it
+  again as soon as the peer sends its first message, not when its pause is over. If that attempt fails as well,
+  the peer can reach this node but not the other way round, and attempts go on at the pace of the pause.
+- Requests to one peer share one connection attempt, however many arrive together.
+- Heartbeats and votes do not wait: they fail fast while a peer is out of reach and are sent again by their timers.
+- `KurinNode.commandPath()` and the detail `commandPath` of the `kurin` health say whether what this node submits
+  can reach the leader now (`UP`, `CONNECTING`, `DOWN`). The health status itself means "a leader is known and
+  heard from"; see the [Actuator adapter](kurin-actuator-boot3/README.md#what-kurin-up-means-and-commandpath).
+
 ### Time
 
 There are three clocks, and they are not interchangeable:

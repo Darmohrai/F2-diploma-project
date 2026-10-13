@@ -738,7 +738,7 @@ run against the code of 1.1.1; what it reported there is recorded below, then th
 | Phase | Scope | Status |
 |-------|-------|--------|
 | 1 | `KurinLockManager`: "unknown" is not "busy" | done |
-| 2 | Transport: the reconnection pause blocks forwarding to the leader | in progress |
+| 2 | Transport: the reconnection pause blocks forwarding to the leader | done |
 | 3 | `@KurinLeaderTask`: placeholders in `interval` | pending |
 | 4 | `DataSourceHealthMonitor`: false DOWN under load | pending |
 | 5 | Release 1.1.2 | pending |
@@ -819,3 +819,84 @@ passed on 1.1.1 as well: they guard behaviour that must stay.
   the opposite: it writes, then starts a second context on the same thread and expects a read on the replica,
   which worked only because a context takes longer than 400 ms to start. Its second context now sets a window of
   1 ms, so the write is outside of it however fast the start is.
+
+## 1.1.2, phase 2: the reconnection pause blocked forwarding to the leader
+
+### The defect, reproduced on 1.1.1
+
+A node that started before its peer failed to connect and paused before its next attempt (up to 2 s). The peer
+came up and was elected. The first node learned that over the connection the leader opened, reported health `UP`,
+and failed every command it had to forward: `ConnectionManager.getOrConnect` refused at once while the pause ran.
+
+`PeerStartOrderTest.commandOfTheNodeThatStartedFirstPassesAsSoonAsItKnowsTheLeader` controls the order of events
+instead of hoping for it: the first node runs alone until seven attempts to connect have really failed (requests
+that share one attempt fail with the same exception object, so objects are counted), which makes the next pause
+1 to 2 s; at that moment the node stops campaigning and its peer is started; the peer is elected in about half a
+second; the first thing the first node sends is the command.
+
+| Code | Runs | Result |
+|---|---|---|
+| 1.1.1 (commit of phase 1, core built in the same reactor) | 10 | 10 failed: `KurinRemoteException: Node 127.0.0.1:61938 is unreachable, next connection attempt is delayed` |
+| with the fix | 10 | 10 passed |
+
+The same defect showed up unprovoked in `LockOutcomeTest` of phase 1 (see there). Its workaround, a wait for the
+command path before the test began, is removed: the test now starts as soon as both instances know the leader.
+
+A first version of the test only waited for the peer to be elected. It reproduced the defect, but for a wrong
+reason (the first node kept re-arming its pause with its own pre-votes) and stopped electing the peer once the
+fix let the first node connect. A run "before the fix" that passed ten times turned out to have used the fixed
+`core` from the local repository; the numbers above are from a reactor build of the old sources.
+
+### Done
+
+- **A sign of life lifts the pause.** `NettyHandler` tells `ConnectionManager.peerAlive` about the `HELLO` and
+  every request of a peer that passed the handshake on an inbound connection; the peer is the node id of its
+  `HELLO`, which is its address. This runs on the I/O thread of the connection; the Raft thread is not involved.
+  A response needs no such call: it arrives over the outbound connection, which is then open and has no pause.
+- **A forward does not fail from the doorstep.** `KurinNetworkClient` sends `ClientCommandRequest` and
+  `ClientQueryRequest` (every command and every non-local query a follower forwards, linearizable reads
+  included) with `awaitNextAttempt`: during a pause they wait for the next attempt, within their own timeout,
+  and fail with the `KurinRemoteException` of that attempt (`Cannot connect to ...`, with the cause) only if it
+  fails. Requests of the Raft protocol (`AppendEntries`, `RequestVote`, `PreVote`, `InstallSnapshot`) fail fast
+  during a pause exactly as before.
+- **Single flight per peer.** All waiting requests share one future per peer (`awaitedAttempts`), and an attempt
+  under way is shared by whoever comes (`connections`, as before). A request that timed out while it waited is
+  not written once the connection is there.
+- **Health.** Of the two options the second was taken: `kurin: UP` keeps meaning "a leader is known and heard
+  from", and readiness for commands is a detail, `commandPath: UP | CONNECTING | DOWN`
+  (`KurinNode.commandPath()`, enum `CommandPath`, in the health details and in `/actuator/kurin`). Both
+  adapters pass the details on unchanged, so they needed no code. Documented in the READMEs of both adapters.
+- Tests: `ConnectionManagerTest` (17, scripted connections: the pause, the lift, once only, an attempt that was
+  under way when the peer showed life, waiting forwards, their timeout, their failure with the cause, 64 parallel
+  forwards on one attempt, shutdown), `CommandPathTest` (3, every state), `PeerStartOrderTest` (1, real nodes),
+  assertions on `commandPath` in both adapter tests, the starter test and `kurin-it`.
+
+### Decisions and deviations
+
+- **A waiting forward does not trigger an attempt of its own; it waits for the next one.** The spec says that a
+  forward "initiates a connection attempt and waits for it". If every forward during a pause started an attempt,
+  a follower under load whose leader is truly unreachable would connect as fast as attempts fail, which is the
+  storm the pause exists to prevent. Instead the forward waits for the attempt that is due anyway. That attempt
+  comes at once in the case the defect was about, because the leader the request is for has just been heard
+  from, and at the end of the pause otherwise (2 s at most, well within the command timeout).
+- **The pause is lifted once per run of failures.** If the attempt that a sign of life allowed fails too, the
+  peer can reach this node but not the other way round; further messages from it change nothing until a
+  connection succeeds. Otherwise every heartbeat of a leader behind a one-way link would cost a connection
+  attempt. An attempt that was already under way when the peer was first heard from does not use the lift up:
+  its failure is followed at once by the attempt the sign of life allows, and callers see only the second result.
+- **`commandPath: CONNECTING` is the normal state of a quiet follower**, because idle connections are closed
+  after `kurin.node.idle-timeout` and opened again on demand. That is why the health status is not derived from
+  it: every follower without traffic would flap. `DOWN` is the informative value: the leader is heard from and
+  cannot be connected to.
+- **The network layer names two Raft request types** (`KurinNetworkClient.carriesClientWork`). `KurinTransport`
+  has one method, which the fault injection of the tests decorates; a second method for client work would have
+  bypassed those decorators. The dependency is noted in `CLAUDE.md`.
+- **Constructor of `ConnectionManager`** gained a variant with a `Connector` and the bounds of the pause, for the
+  tests; the existing one is unchanged.
+- **Three tests with a margin of 50 to 120 ms were given a margin of seconds.**
+  `RaftClusterTest.retryWithSameRequestIdAfterTimeoutIsAppliedOnce` delays the heartbeats of the leader by 250 ms,
+  and two tests of `LockClusterTest` by 180 ms, in a cluster whose leader steps down after 300 ms without an
+  answer. On the machine as it was during this work (3 GB of 16 free, Docker running) the first of them failed
+  in 5 of 15 runs on the code of phase 1, before anything in the transport was changed, with
+  `KurinNoLeaderException` after `Leader ... has not heard from a majority for 300 ms. Stepping down.` The
+  clusters of these three tests now use election timeouts of 3 to 4 s; after that the test passed 10 of 10.

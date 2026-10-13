@@ -22,8 +22,18 @@ the tests that failed on 1.1.1 and pass now.
   `JobAndLeaderClusterTest.claimWithoutAnAnswerSkipsTheRunAndIsReportedAsUnknown`, `UnknownOutcomeTest`,
   `LockOutcomeTest` (`kurin-it`).
 
+- **A node that started before its peer could not forward commands to it for up to two seconds after the peer
+  was elected.** Its first attempts to connect had failed, and during the pause before the next one every
+  forwarded command and linearizable query failed at once with `KurinRemoteException: Node ... is unreachable,
+  next connection attempt is delayed`, while the node followed the leader and reported health `UP`. Now a message
+  from a peer ends the pause, a forwarded request waits for the connection within its own timeout and fails only
+  if an attempt to connect fails, and all requests to one peer share one attempt.
+  Tests: `PeerStartOrderTest`, `ConnectionManagerTest`, `CommandPathTest`, `LockOutcomeTest` (`kurin-it`).
+
 ### Added
 
+- `KurinNode.commandPath()` and the detail `commandPath` (`UP`, `CONNECTING`, `DOWN`) of the `kurin` health and
+  of `/actuator/kurin`: whether what this node submits can reach the leader. The health status is unchanged.
 - Meters `kurin.locks.acquire{result="unknown"}`, `kurin.locks.release.unconfirmed`,
   `kurin.jobs.claims{result="unknown"}`; `LockListener.onAcquireFailed` / `onReleaseUnconfirmed`,
   `JobListener.onClaimUnknown`.

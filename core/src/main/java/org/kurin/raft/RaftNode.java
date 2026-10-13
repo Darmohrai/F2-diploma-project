@@ -177,6 +177,13 @@ public class RaftNode {
         return raftState;
     }
 
+    /**
+     * @return the state of this node's own connection to the peer, whatever decorates the transport
+     */
+    public org.kurin.network.client.ConnectionManager.Reachability reachability(NodeAddress peer) {
+        return networkStarter.getClient().reachability(peer);
+    }
+
     public io.netty.util.Timer getTimer() {
         return networkStarter.getTimer();
     }

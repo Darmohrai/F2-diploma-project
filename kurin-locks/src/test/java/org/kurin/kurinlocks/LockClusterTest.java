@@ -55,11 +55,25 @@ class LockClusterTest {
     }
 
     private Node startCluster(Duration commandTimeout) {
+        return startCluster(commandTimeout, false);
+    }
+
+    /**
+     * @param patientLeader the leader keeps its role through seconds without an answer. For tests that slow its
+     *                      heartbeats down: with the usual timings it steps down after 300 ms of silence.
+     */
+    private Node startCluster(Duration commandTimeout, boolean patientLeader) {
         cluster = KurinTestCluster.builder().nodes(3)
                 .services(() -> List.of(new LockStateMachine(), new JobStateMachine()))
+                .configure((index, builder) -> {
+                    if (patientLeader) {
+                        builder.raftConfig().setElectionTimeoutMinMs(3000);
+                        builder.raftConfig().setElectionTimeoutMaxMs(4000);
+                    }
+                })
                 .build()
                 .start();
-        Node leader = cluster.awaitLeader(ELECTION);
+        Node leader = cluster.awaitLeader(patientLeader ? Duration.ofSeconds(30) : ELECTION);
         for (Node node : cluster.nodes()) {
             managers.put(node, new KurinLockManager(node.kurin(), node.service(LockStateMachine.class), commandTimeout));
         }
@@ -158,7 +172,7 @@ class LockClusterTest {
     // Spec test 13
     @Test
     void acquisitionWithUnknownOutcomeLeavesNoLockBehind() throws Exception {
-        Node leader = startCluster(Duration.ofMillis(60));
+        Node leader = startCluster(Duration.ofMillis(60), true);
         List<Node> followers = cluster.followers();
 
         // Replication is slower than the lock manager waits: the acquire command commits after the caller gave up.
@@ -330,7 +344,7 @@ class LockClusterTest {
 
     @Test
     void undoingAnAttemptWithUnknownOutcomeDoesNotReleaseTheLockOfTheNextAttempt() throws Exception {
-        Node leader = startCluster(Duration.ofMillis(60));
+        Node leader = startCluster(Duration.ofMillis(60), true);
         KurinLockManager manager = managers.get(leader);
         cluster.followers().forEach(follower -> cluster.delay(leader, follower, Duration.ofMillis(180)));
         assertThatThrownBy(() -> manager.tryLock("retried", Duration.ofMinutes(10))).isInstanceOf(KurinTimeoutException.class);

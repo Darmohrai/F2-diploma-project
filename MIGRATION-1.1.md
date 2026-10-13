@@ -412,3 +412,17 @@ New, additive API: `KurinLockManager.LockListener.onAcquireFailed` / `onReleaseU
 `KurinJobs.JobListener.onClaimUnknown` (default methods), constructors with a cause on `KurinNoLeaderException`
 and `KurinTimeoutException`, meters `kurin.locks.acquire{result="unknown"}` and
 `kurin.locks.release.unconfirmed`.
+
+## Transport: forwarded requests wait for the connection to the leader
+
+Nothing to change in applications. What is observable:
+
+- A command or query submitted on a follower no longer fails at once with
+  `KurinRemoteException: Node ... is unreachable, next connection attempt is delayed` while the node pauses
+  between connection attempts. It waits for the next attempt, within its own timeout. If that attempt fails, the
+  exception is `KurinRemoteException: Cannot connect to ...` with the cause; if the timeout ends first, it is
+  `KurinTimeoutException`. Code that retried on the old message can drop the retry.
+- A node that started before its peers connects to a peer as soon as it hears from it.
+- The `kurin` health has a new detail, `commandPath` (`UP`, `CONNECTING`, `DOWN`), also available as
+  `KurinNode.commandPath()`. The status is computed as before. `CONNECTING` on a follower that forwards nothing is
+  normal.

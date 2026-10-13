@@ -24,6 +24,26 @@ Each indicator appears when the Kurin module it reports on is in use.
 A bean with the name of an indicator (`kurinHealthIndicator`, `kurinCacheHealthIndicator`,
 `kurinRoutingHealthIndicator`, `dbHealthContributor`) replaces it.
 
+## What `kurin: UP` means, and `commandPath`
+
+`UP` means that the instance is a working member of its cluster: it leads, or it follows a leader it hears from.
+It does not mean that a command submitted on this instance gets through at this very moment. A follower hears
+its leader over a connection the leader opened, and sends its own commands and linearizable queries over a
+connection it opens itself. That second fact is the detail `commandPath`:
+
+| `commandPath` | Meaning |
+|---|---|
+| `UP` | The instance is the established leader, or has an open connection to the leader. |
+| `CONNECTING` | A leader is known and nothing is known to be wrong, but the connection is not open: it is being opened, or will be by the first request that needs it. Idle connections are closed after `kurin.node.idle-timeout`, so a follower that forwards nothing shows this most of the time. A request submitted now waits for the connection. A leader shows it between its election and the commit of the first entry of its term. |
+| `DOWN` | No leader is known, the node is not started or its storage failed, or the last attempt to connect to the leader failed and the next one is not due yet. |
+
+The status is deliberately not derived from `commandPath`: an instance that follows a leader serves local reads
+and everything that needs no cluster, and taking it out of rotation because an idle connection was closed would
+make every quiet follower flap. If an instance must not receive traffic until its commands get through, use the
+detail in a readiness check of your own (`KurinNode.commandPath()` gives the same value). `kurin: UP` with
+`commandPath: DOWN` for longer than a few seconds says that the leader can reach this instance and not the other
+way round.
+
 ## Why `db` is replaced
 
 Spring Boot builds its `db` health from every `DataSource` bean by asking it for a connection. The routing data

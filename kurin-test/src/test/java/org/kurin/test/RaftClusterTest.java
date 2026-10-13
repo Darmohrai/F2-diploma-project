@@ -103,8 +103,15 @@ class RaftClusterTest {
     // Spec test 6
     @Test
     void retryWithSameRequestIdAfterTimeoutIsAppliedOnce() throws Exception {
-        threeNodes();
-        Node leader = cluster.awaitLeader(ELECTION);
+        // The leader is to stay the leader while its heartbeats are slowed down below. With the usual timings of
+        // the test cluster it steps down after 300 ms without an answer, which is 50 ms more than the delay.
+        cluster = KurinTestCluster.builder().nodes(3).services(() -> List.of(new CounterService()))
+                .configure((index, builder) -> {
+                    builder.raftConfig().setElectionTimeoutMinMs(3000);
+                    builder.raftConfig().setElectionTimeoutMaxMs(4000);
+                })
+                .build().start();
+        Node leader = cluster.awaitLeader(Duration.ofSeconds(30));
         List<Node> followers = cluster.followers();
 
         // Replication is slower than the caller is willing to wait: the command commits after the timeout
