@@ -1,0 +1,235 @@
+// Kurin peer protocol, version 2 (NetworkConfig.PROTOCOL_VERSION).
+//
+// This file is the language-neutral contract of the protocol between Kurin nodes. proto3 is used as the
+// interface definition language; on the wire Kurin encodes the same messages with Kryo inside its own frame
+// (see ADR-001, docs/adr/0001-choice-of-technology.md):
+//
+//   magic:int16 = 0x5252 | type:int8 | correlationId:int64 | length:int32 | payload[length]
+//   type: 1 REQUEST, 2 RESPONSE, 4 HELLO, 5 HELLO_ACK, 6 HELLO_REJECT
+//   length <= maxPayloadSize (1 MiB by default); a larger message fails on the sender with SERIALIZATION.
+//
+// Transport security (no per-request tokens; the peers are processes of one application):
+//   1. TLS 1.2/1.3 with mutual authentication (client certificate required) when kurin.node.tls.enabled = true;
+//   2. Handshake: the first message on every connection; no other RPC is accepted before HELLO_ACK;
+//   3. Every later message travels on the authenticated connection.
+//
+// Field types follow the Java records in core/src/main/java/org/kurin/raft/rpc: Java long -> int64,
+// Java int -> int32. Indexes, terms and timestamps are signed 64-bit; 0 means "none".
+//
+// Error model: a call either returns its response message or fails with an RpcError (Java RpcResult with
+// ok = false). The mapping of ErrorType to gRPC status codes is given for readers used to gRPC.
+
+syntax = "proto3";
+
+package kurin.raft.v2;
+
+option java_package = "org.kurin.contract.v2";
+option java_multiple_files = true;
+
+// RPCs between the nodes of one Kurin cluster.
+service RaftPeerService {
+  // Opens a connection. Sent by the connecting side; answered with HELLO_ACK (HelloResponse.accepted = true)
+  // or HELLO_REJECT (accepted = false, reject_reason set), after which the connection is closed.
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+
+  // Raft thesis, section 9.6: would the receiver vote for the sender in term = current term + 1?
+  // Sent by a follower whose election timeout expired. Changes no state on the receiver.
+  rpc PreVote(PreVoteRequest) returns (PreVoteResponse);
+
+  // Raft paper, figure 2: sent by a candidate after it won a PreVote round.
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
+
+  // Replication and heartbeat; sent by the leader. Up to max_entries_per_append (512) entries per call.
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Sent by the leader to a follower that needs entries already compacted into a snapshot. The snapshot is
+  // sent in chunks; the follower answers each chunk with the offset it expects next.
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+
+  // Work of the application forwarded by a follower to the leader (ClientCommandRequest).
+  // Idempotent by request_id: a command already applied returns the stored outcome.
+  rpc SubmitCommand(SubmitCommandRequest) returns (SubmitCommandResponse);
+
+  // Read forwarded by a follower to the leader (ClientQueryRequest).
+  rpc SubmitQuery(SubmitQueryRequest) returns (SubmitQueryResponse);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Common types
+// ---------------------------------------------------------------------------------------------------------
+
+// Address of a node; host:port is also its node id.
+message NodeAddress {
+  string host = 1; // DNS name or IP literal, 1..253 characters
+  int32 port = 2;  // 1..65535
+}
+
+// A value of a type registered in KurinTypeRegistry (a command, a query or a result of the application).
+message TypedPayload {
+  int32 type_id = 1;  // stable id: @KurinType(id) or a hash of the class name; must be registered on both sides
+  bytes kryo_data = 2; // Kryo encoding of the object
+}
+
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0; // never sent
+  ENTRY_TYPE_USER = 1;        // command of a service
+  ENTRY_TYPE_NOOP = 2;        // appended by a new leader to commit entries of earlier terms
+  ENTRY_TYPE_INTERNAL = 3;    // command of the framework itself
+}
+
+// One entry of the replicated log (Java LogEntry).
+message LogEntry {
+  int64 index = 1;               // >= 1, strictly increasing by 1
+  int64 term = 2;                // >= 1
+  EntryType type = 3;
+  string request_id = 4;         // UUID, 36 characters; empty for NOOP
+  int64 leader_timestamp_ms = 5; // leader wall clock at append, Unix epoch milliseconds; the only clock of state machines
+  TypedPayload command = 6;      // absent for NOOP
+}
+
+enum ReadConsistency {
+  READ_CONSISTENCY_UNSPECIFIED = 0; // rejected with INVALID_ARGUMENT
+  READ_CONSISTENCY_LINEARIZABLE = 1;
+  READ_CONSISTENCY_LEASE = 2;
+  READ_CONSISTENCY_LOCAL = 3;
+}
+
+// Java RpcResult.errorType. gRPC equivalent in brackets.
+enum ErrorType {
+  ERROR_TYPE_UNSPECIFIED = 0;
+  NOT_LEADER = 1;      // the receiver is not the leader; leader_hint names the leader if known  [FAILED_PRECONDITION]
+  NO_LEADER = 2;       // no leader is known (election under way); retry after an election timeout [UNAVAILABLE]
+  TIMEOUT = 3;         // the command was not committed in command_timeout; outcome unknown          [DEADLINE_EXCEEDED]
+  COMMAND_FAILED = 4;  // the handler threw; the failure is committed and deterministic               [ABORTED]
+  SERIALIZATION = 5;   // payload over maxPayloadSize or type not registered                         [INVALID_ARGUMENT]
+  NOT_STARTED = 6;     // the node is not running                                                     [UNAVAILABLE]
+  STORAGE = 7;         // the node is in STORAGE_FAILED                                               [UNAVAILABLE]
+  REMOTE = 8;          // any other failure on the remote side                                        [INTERNAL]
+}
+
+message RpcError {
+  ErrorType type = 1;
+  string message = 2;           // human-readable, for logs; never parsed
+  NodeAddress leader_hint = 3;  // only with NOT_LEADER
+  string failed_cause_type = 4; // only with COMMAND_FAILED: class name of the exception thrown by the handler
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Handshake (encoded by hand, not with Kryo, so that nodes with different type registries can still tell
+// each other why they refuse to connect)
+// ---------------------------------------------------------------------------------------------------------
+
+message HandshakeRequest {
+  string cluster_name = 1;               // must equal the receiver's cluster name
+  string node_id = 2;                    // host:port of the sender
+  int32 protocol_version = 3;            // must equal the receiver's version (2)
+  string type_registry_fingerprint = 4;  // hash of all registered type ids and classes; must be equal
+  string nonce = 5;                      // random, chosen by the sender, echoed by the receiver
+  string hmac = 6;                       // hex HMAC-SHA256(cluster_secret, cluster_name|node_id|nonce); empty if no secret
+}
+
+message HandshakeResponse {
+  bool accepted = 1;            // true: HELLO_ACK; false: HELLO_REJECT and the connection is closed [UNAUTHENTICATED]
+  string cluster_name = 2;
+  string node_id = 3;
+  int32 protocol_version = 4;
+  string type_registry_fingerprint = 5;
+  string nonce = 6;             // the sender's nonce, echoed
+  string hmac = 7;              // HMAC-SHA256(cluster_secret, cluster_name|node_id|nonce) of the receiver
+  string reject_reason = 8;     // set when accepted = false: which of the checks failed
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Elections
+// ---------------------------------------------------------------------------------------------------------
+
+message PreVoteRequest {
+  int64 term = 1;            // the term the sender would start: its current term + 1
+  NodeAddress candidate_id = 2;
+  int64 last_log_index = 3;
+  int64 last_log_term = 4;
+}
+
+message PreVoteResponse {
+  int64 term = 1;            // receiver's current term
+  bool vote_granted = 2;     // true if the receiver heard no leader within the election timeout and the sender's log is up to date
+}
+
+message RequestVoteRequest {
+  int64 term = 1;
+  NodeAddress candidate_id = 2;
+  int64 last_log_index = 3;
+  int64 last_log_term = 4;
+}
+
+message RequestVoteResponse {
+  int64 term = 1;
+  bool vote_granted = 2;     // at most one vote per term, persisted before the answer
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Replication
+// ---------------------------------------------------------------------------------------------------------
+
+message AppendEntriesRequest {
+  int64 term = 1;
+  NodeAddress leader_id = 2;
+  int64 prev_log_index = 3;          // 0 if entries start at index 1
+  int64 prev_log_term = 4;
+  repeated LogEntry entries = 5;     // empty for a heartbeat; at most 512
+  int64 leader_commit = 6;
+}
+
+message AppendEntriesResponse {
+  int64 term = 1;
+  bool success = 2;
+  int64 conflict_index = 3;  // when success = false: first index the leader should send next
+  int64 conflict_term = 4;   // when success = false: term of the conflicting entry, 0 if the follower's log is shorter
+}
+
+message InstallSnapshotRequest {
+  int64 term = 1;
+  NodeAddress leader_id = 2;
+  int64 last_included_index = 3;
+  int64 last_included_term = 4;
+  int32 offset = 5;          // byte offset of this chunk; a snapshot is at most 2^31 - 1 bytes
+  bytes data = 6;            // chunk of Kryo(Snapshot); at most maxAppendBytes; decoded only after the chunk with done = true
+  bool done = 7;             // true for the last chunk
+}
+
+message InstallSnapshotResponse {
+  int64 term = 1;
+  int32 next_offset = 2;     // offset the follower expects next; 0 restarts the transfer
+  bool installed = 3;        // true after the last chunk was verified and installed
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Work forwarded to the leader
+// ---------------------------------------------------------------------------------------------------------
+
+message SubmitCommandRequest {
+  string request_id = 1;            // UUID; the deduplication key (dedupCacheSize most recent ids are kept)
+  TypedPayload command = 2;
+  map<string, string> headers = 3;  // tracing context from KurinInstrumentation (e.g. W3C traceparent); empty if tracing is off
+}
+
+message SubmitCommandResponse {
+  oneof outcome {
+    TypedPayload value = 1;         // return value of the @KurinCommand handler
+    RpcError error = 2;
+  }
+}
+
+message SubmitQueryRequest {
+  string request_id = 1;
+  TypedPayload query = 2;
+  ReadConsistency consistency = 3;
+  map<string, string> headers = 4;
+}
+
+message SubmitQueryResponse {
+  oneof outcome {
+    TypedPayload value = 1;
+    RpcError error = 2;
+  }
+}

@@ -148,6 +148,7 @@ HTTP-запитів застосунку (Spring Security); оркестрато
 | <a id="srs-nfr-rel-04"></a>SRS-NFR-REL-04 | Reliability | Повернення вузла після відновлення сховища | пауза повтору 100 мс – 10 с; 0 голосів і 0 підтверджень у стані `STORAGE_FAILED` | реалізовано | NFR-09 |
 | <a id="srs-nfr-res-01"></a>SRS-NFR-RES-01 | Resource limits | Розмір одного повідомлення протоколу | ≤ `maxPayloadSize` (1 МіБ за замовчуванням); більше – помилка відправника, з'єднання не розривається | реалізовано | новий |
 | <a id="srs-nfr-res-02"></a>SRS-NFR-RES-02 | Resource limits | Записи журналу в пам'яті; таблиця дедуплікації | снапшот після 10 000 записів; ≤ 10 000 `requestId` у таблиці (налаштовується) | реалізовано | новий |
+| <a id="srs-nfr-res-03"></a>SRS-NFR-RES-03 | Resource limits | Розмір серіалізованого снапшота | ≤ 2³¹ − 1 байт (зсув частини `InstallSnapshot` і довжина `snapshot.bin` – int32); перевищення – помилка створення снапшота, а не пошкоджений файл | обмеження формату | новий (ЛР№6, аудит 2.7) |
 | <a id="srs-nfr-sec-01"></a>SRS-NFR-SEC-01 | Security | Транспорт між вузлами | TLS 1.2 / 1.3 (протоколи JDK 21 за замовчуванням), mTLS з обов'язковою автентифікацією клієнта; рукостискання з HMAC-SHA256 над `clusterName\|nodeId\|nonce` | реалізовано | NFR-10 |
 | <a id="srs-nfr-sec-02"></a>SRS-NFR-SEC-02 | Security | Десеріалізація (OWASP A08:2021) | Kryo з обов'язковою реєстрацією типів; кодек кешу – перелік дозволених пакетів | реалізовано | NFR-11 |
 | <a id="srs-nfr-sec-03"></a>SRS-NFR-SEC-03 | Security | Маркер узгодженості маршрутизації | підпис HMAC-SHA256; 100 % підроблених маркерів відхиляються | реалізовано | NFR-12 |
@@ -198,6 +199,7 @@ HTTP-запитів застосунку (Spring Security); оркестрато
 | SRS-NFR-REL-03 | T | навантажувальний тест S (`snapshot-install`) | ≤ 2 000 мс | наявний |
 | SRS-NFR-RES-01 | T | `RaftClusterTest.oversizedPayloadFailsWithSerializationExceptionAndConnectionSurvives` | `KurinSerializationException` у відправника; term і лідер не змінилися | наявний |
 | SRS-NFR-RES-02 | T | модульний тест `RaftState`: 10 001-й `requestId` за `dedupCacheSize = 10 000` | найстаріший `requestId` витіснено | плановий |
+| SRS-NFR-RES-03 | A, T | аналіз формату (`InstallSnapshotRequest.offset: int`, `FileSnapshotStore`); тест зі станом сервісу понад ліміт | створення снапшота завершується винятком, попередній снапшот цілий | плановий (тест) |
 | SRS-NFR-SEC-02 | T, A | тести реєстру типів (незареєстрований клас відхилено); SonarQube (правила десеріалізації) | 0 незареєстрованих класів у протоколі; 0 Blocker / Critical | наявний / плановий (SonarQube) |
 | SRS-NFR-SEC-03 | T | `ConsistencyAndHealthTest` (модуль `kurin-data-routing`) | підроблений підпис відхилено | наявний |
 | SRS-NFR-SEC-04 | A | Trivy (`trivy fs --severity CRITICAL,HIGH .`) або OWASP Dependency-Check у CI | 0 знахідок з наявним виправленням | плановий |
@@ -241,3 +243,16 @@ HTTP-запитів застосунку (Spring Security); оркестрато
 | Маршрутизація БД, read-your-writes | SRS-FUN-24 … 29 | Data Routing | – |
 | Starters, метрики, health | SRS-FUN-30 … 33 | Spring Integration, Observability | – |
 | NFR-10, NFR-11 (безпека транспорту й десеріалізації) | SRS-FUN-11, SRS-NFR-SEC-01, 02 | Transport (Netty, Kryo, handshake) | [ADR-001](./adr/0001-choice-of-technology.md) |
+
+### 7.1 Трасування вимог у модель даних, контракти й алгоритми
+
+| Вимоги SRS | Модель даних (2.4) | Контракт (2.5) | Алгоритм (2.6) |
+| :--- | :--- | :--- | :--- |
+| SRS-FUN-03, 05, 09 | `LogSegment`, `LogRecord`, `LogEntry` | `RaftPeerService.AppendEntries` | [А1](./2_design.md#алгоритм-а1) |
+| SRS-FUN-04 | `Snapshot.dedupTable`, `CommandOutcome` | `SubmitCommandRequest.request_id` | – |
+| SRS-FUN-06, SRS-NFR-RES-03 | `SnapshotFile`, `Snapshot` | `RaftPeerService.InstallSnapshot` | – |
+| SRS-FUN-11, SRS-NFR-SEC-01 | – | `RaftPeerService.Handshake` | – |
+| SRS-FUN-13 … 16 | `LockTable`, `LockRecord` | `SubmitCommand` (`AcquireLock`), `ErrorType` | [А2](./2_design.md#алгоритм-а2) |
+| SRS-FUN-18 | `Job`, `JobRun`, `JobStatus` | – | – |
+| SRS-FUN-19 … 23 | `L2CacheRecord`, `InvalidationState`, `InvalidationSeqFile` | – | [А3](./2_design.md#алгоритм-а3) |
+| SRS-FUN-33 | – | `openapi.yaml`: `/kurin`, `/health/{component}` | – |
