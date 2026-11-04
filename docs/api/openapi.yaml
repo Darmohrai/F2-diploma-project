@@ -1,0 +1,297 @@
+openapi: 3.0.3
+info:
+  title: Kurin management API (Spring Boot Actuator)
+  version: 1.1.2
+  description: |
+    Read-only management interface of one Application Instance with Kurin starters. Served by the Actuator of
+    the application on its management port; Kurin opens no HTTP port of its own (SRS-CON-01).
+
+    Authentication is provided by the application, not by Kurin: the deployment must put these endpoints behind
+    Spring Security (OAuth2 resource server) or the API gateway and require a JWT with the scope
+    `kurin.monitor`. Prometheus scrapes `/actuator/prometheus` on the internal management network.
+
+    Requirements: SRS-FUN-33 (health and /actuator/kurin), SRS-NFR-OBS-01.
+  contact:
+    name: Darmohrai V.
+    url: https://github.com/Darmohrai/KurinFrame
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: https://{instance}:{managementPort}/actuator
+    description: Management port of one instance
+    variables:
+      instance:
+        default: app-0.app.svc.cluster.local
+      managementPort:
+        default: '8081'
+security:
+  - bearerAuth: []
+tags:
+  - name: kurin
+    description: State of the embedded Raft node and of the Kurin modules
+  - name: health
+    description: Health verdicts used by load balancers and orchestrators
+paths:
+  /kurin:
+    get:
+      tags: [kurin]
+      operationId: getKurinState
+      summary: State of the node and of the coordination, cache and routing modules
+      description: |
+        Section `node` is always present. Sections `coordination`, `caches` and `routing` are present when the
+        corresponding starter is on the classpath. A section whose producer failed contains only `error`.
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KurinState'
+              example:
+                node:
+                  nodeId: app-0:7000
+                  started: true
+                  role: LEADER
+                  term: 7
+                  leaderId: app-0:7000
+                  leadershipEstablished: true
+                  commandPath: UP
+                  commitIndex: 18234
+                  lastApplied: 18234
+                  lastLogIndex: 18234
+                  logEntries: 8234
+                  peers:
+                    app-1:7000: {lastContactMsAgo: 42}
+                    app-2:7000: {lastContactMsAgo: unknown}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotExposed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /health/{component}:
+    get:
+      tags: [health]
+      operationId: getKurinHealth
+      summary: Health verdict of one Kurin component
+      description: |
+        `kurin` – membership of the node in its cluster (KurinNodeHealth); `kurinCache` – tiers of the cache;
+        `kurinRouting` – database nodes known to the router. Actuator answers 503 for DOWN and OUT_OF_SERVICE.
+      parameters:
+        - name: component
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [kurin, kurinCache, kurinRouting]
+      responses:
+        '200':
+          description: Status UP or UNKNOWN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentHealth'
+              example:
+                status: UP
+                details:
+                  nodeId: app-1:7000
+                  role: FOLLOWER
+                  term: 7
+                  leaderId: app-0:7000
+                  commandPath: UP
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotExposed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: Status DOWN (storage failed) or OUT_OF_SERVICE (no leader for longer than the threshold, node not started)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentHealth'
+              example:
+                status: DOWN
+                details:
+                  nodeId: app-2:7000
+                  role: FOLLOWER
+                  storageFailure: 'java.io.IOException: No space left on device'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token issued by the identity provider of the application; scope `kurin.monitor` required.
+  responses:
+    Unauthorized:
+      description: No token, an expired token or a token with an invalid signature
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer error="invalid_token"
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: The token lacks the scope kurin.monitor
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotExposed:
+      description: The endpoint is not exposed (management.endpoints.web.exposure.include) or the component is absent
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    TooManyRequests:
+      description: Rate limit of the gateway exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+          description: Seconds to wait
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Unexpected failure of the Actuator
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    Problem:
+      description: RFC 9457 problem details
+      type: object
+      required: [status, title]
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+        title:
+          type: string
+          maxLength: 200
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+          maxLength: 2000
+        instance:
+          type: string
+    KurinState:
+      type: object
+      required: [node]
+      properties:
+        node:
+          $ref: '#/components/schemas/NodeState'
+        coordination:
+          $ref: '#/components/schemas/Section'
+        caches:
+          $ref: '#/components/schemas/Section'
+        routing:
+          $ref: '#/components/schemas/Section'
+    Section:
+      description: Free-form state of a module; keys are defined by the module and may grow between versions
+      type: object
+      additionalProperties: true
+    NodeState:
+      description: KurinNodeHealth.describe(node)
+      type: object
+      required: [nodeId, started, role, term, leadershipEstablished, commandPath, commitIndex, lastApplied, lastLogIndex, logEntries, peers]
+      properties:
+        nodeId:
+          $ref: '#/components/schemas/NodeId'
+        started:
+          type: boolean
+        role:
+          type: string
+          enum: [FOLLOWER, CANDIDATE, LEADER]
+        term:
+          type: integer
+          format: int64
+          minimum: 0
+        leaderId:
+          allOf:
+            - $ref: '#/components/schemas/NodeId'
+          nullable: true
+          description: null while no leader is known
+        leadershipEstablished:
+          type: boolean
+          description: true only on a leader that committed its NOOP entry and holds a valid lease
+        commandPath:
+          type: string
+          enum: [UP, CONNECTING, DOWN]
+          description: Whether a command submitted on this node reaches the leader now
+        commitIndex:
+          type: integer
+          format: int64
+          minimum: 0
+        lastApplied:
+          type: integer
+          format: int64
+          minimum: 0
+        lastLogIndex:
+          type: integer
+          format: int64
+          minimum: 0
+        logEntries:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Entries kept in the log after the last snapshot
+        storageFailure:
+          type: string
+          description: Present only when the node is in STORAGE_FAILED
+        leaderUnknownForMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Present in health details only while no leader is known
+        peers:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/PeerContact'
+    PeerContact:
+      type: object
+      required: [lastContactMsAgo]
+      properties:
+        lastContactMsAgo:
+          description: Milliseconds since the last message of the peer, or "unknown" if none was received
+          oneOf:
+            - type: integer
+              format: int64
+              minimum: 0
+            - type: string
+              enum: [unknown]
+    NodeId:
+      type: string
+      description: host:port of a node
+      pattern: '^[A-Za-z0-9.\-]{1,253}:[0-9]{1,5}$'
+      example: app-0:7000
+    ComponentHealth:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [UP, UNKNOWN, OUT_OF_SERVICE, DOWN]
+        details:
+          type: object
+          additionalProperties: true
