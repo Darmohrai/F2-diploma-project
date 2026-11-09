@@ -508,32 +508,67 @@ SQL-запит.
 
 ## Перелік джерел до розділу 1
 
-1. Kleppmann M. How to do distributed locking. 2016. URL: https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html (дата звернення: 20.10.2026).
-2. Gilbert S., Lynch N. Brewer's conjecture and the feasibility of consistent, available, partition-tolerant web services. ACM SIGACT News. 2002. Vol. 33, no. 2. P. 51–59. DOI: 10.1145/564585.564601.
-3. Lamport L. The part-time parliament. ACM Transactions on Computer Systems. 1998. Vol. 16, no. 2. P. 133–169. DOI: 10.1145/279227.279229.
-4. Hunt P., Konar M., Junqueira F. P., Reed B. ZooKeeper: Wait-free Coordination for Internet-scale Systems. 2010 USENIX Annual Technical Conference (USENIX ATC 10). Boston, 2010. URL: https://www.usenix.org/conference/usenix-atc-10/zookeeper-wait-free-coordination-internet-scale-systems (дата звернення: 20.10.2026).
-5. Ongaro D., Ousterhout J. In Search of an Understandable Consensus Algorithm. 2014 USENIX Annual Technical Conference (USENIX ATC 14). Philadelphia, 2014. P. 305–319. URL: https://www.usenix.org/conference/atc14/technical-sessions/presentation/ongaro (дата звернення: 20.10.2026).
-6. Ongaro D. Consensus: Bridging Theory and Practice : PhD dissertation. Stanford University, 2014. URL: https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf (дата звернення: 20.10.2026).
-7. Herlihy M. P., Wing J. M. Linearizability: a correctness condition for concurrent objects. ACM Transactions on Programming Languages and Systems. 1990. Vol. 12, no. 3. P. 463–492. DOI: 10.1145/78969.78972.
-8. Gray C., Cheriton D. Leases: an efficient fault-tolerant mechanism for distributed file cache consistency. Proceedings of the 12th ACM Symposium on Operating Systems Principles (SOSP '89). 1989. P. 202–210. DOI: 10.1145/74850.74870.
-9. Burrows M. The Chubby lock service for loosely-coupled distributed systems. 7th USENIX Symposium on Operating Systems Design and Implementation (OSDI 06). Seattle, 2006. URL: https://www.usenix.org/conference/osdi-06/chubby-lock-service-loosely-coupled-distributed-systems (дата звернення: 20.10.2026).
-10. Redis Pub/sub. Redis Documentation. URL: https://redis.io/docs/latest/develop/pubsub/ (дата звернення: 20.10.2026).
-11. Log-Shipping Standby Servers. PostgreSQL Documentation. URL: https://www.postgresql.org/docs/current/warm-standby.html (дата звернення: 20.10.2026).
-12. Karger D., Lehman E., Leighton T. et al. Consistent hashing and random trees: distributed caching protocols for relieving hot spots on the World Wide Web. Proceedings of the 29th Annual ACM Symposium on Theory of Computing (STOC '97). 1997. P. 654–663. DOI: 10.1145/258533.258660.
-13. ZooKeeper: Because Coordinating Distributed Systems is a Zoo. Apache ZooKeeper. URL: https://zookeeper.apache.org/doc/current/zookeeperOver.html (дата звернення: 20.10.2026).
-14. ZooKeeper Administrator's Guide. Apache ZooKeeper. URL: https://zookeeper.apache.org/doc/current/zookeeperAdmin.html (дата звернення: 20.10.2026).
-15. ZooKeeper Programmer's Guide. Apache ZooKeeper. URL: https://zookeeper.apache.org/doc/current/zookeeperProgrammers.html (дата звернення: 20.10.2026).
-16. Shared Reentrant Lock. Apache Curator. URL: https://curator.apache.org/docs/recipes-shared-reentrant-lock/ (дата звернення: 20.10.2026).
-17. etcd3 API. etcd Documentation v3.5. URL: https://etcd.io/docs/v3.5/learning/api/ (дата звернення: 20.10.2026).
-18. Performance. etcd Documentation v3.5. URL: https://etcd.io/docs/v3.5/op-guide/performance/ (дата звернення: 20.10.2026).
-19. bbolt: An embedded key/value database for Go. GitHub, etcd-io. URL: https://github.com/etcd-io/bbolt (дата звернення: 20.10.2026).
-20. KV API guarantees. etcd Documentation v3.5. URL: https://etcd.io/docs/v3.5/learning/api_guarantees/ (дата звернення: 20.10.2026).
-21. System limits. etcd Documentation v3.5. URL: https://etcd.io/docs/v3.5/dev-guide/limit/ (дата звернення: 20.10.2026).
-22. Maintenance. etcd Documentation v3.5. URL: https://etcd.io/docs/v3.5/op-guide/maintenance/ (дата звернення: 20.10.2026).
-23. Data Partitioning and Replication. Hazelcast Platform 5.5 Documentation. URL: https://docs.hazelcast.com/hazelcast/5.5/architecture/data-partitioning (дата звернення: 20.10.2026).
-24. CP Subsystem. Hazelcast Platform 5.5 Documentation. URL: https://docs.hazelcast.com/hazelcast/5.5/cp-subsystem/cp-subsystem (дата звернення: 20.10.2026).
-25. FencedLock. Hazelcast Platform 5.5 Documentation. URL: https://docs.hazelcast.com/hazelcast/5.5/data-structures/fencedlock (дата звернення: 20.10.2026).
-26. Configuring the CP Subsystem. Hazelcast Platform 5.5 Documentation. URL: https://docs.hazelcast.com/hazelcast/5.5/cp-subsystem/configuration (дата звернення: 20.10.2026).
-27. Krawczyk H., Bellare M., Canetti R. HMAC: Keyed-Hashing for Message Authentication : RFC 2104. IETF, 1997. URL: https://www.rfc-editor.org/rfc/rfc2104 (дата звернення: 20.10.2026).
-28. A08:2021 – Software and Data Integrity Failures. OWASP Top 10:2021. URL: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/ (дата звернення: 20.10.2026).
-29. Regulation (EU) 2016/679 of the European Parliament and of the Council of 27 April 2016 (General Data Protection Regulation). EUR-Lex. URL: https://eur-lex.europa.eu/eli/reg/2016/679/oj (дата звернення: 20.10.2026).
+1. Kleppmann M. How to do distributed locking. 2016. URL:
+   <https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html> (дата звернення: 20.10.2026).
+2. Gilbert S., Lynch N. Brewer's conjecture and the feasibility of consistent, available, partition-tolerant web
+   services. ACM SIGACT News. 2002. Vol. 33, no. 2. P. 51–59. DOI: 10.1145/564585.564601.
+3. Lamport L. The part-time parliament. ACM Transactions on Computer Systems. 1998. Vol. 16, no. 2. P. 133–169. DOI:
+   10.1145/279227.279229.
+4. Hunt P., Konar M., Junqueira F. P., Reed B. ZooKeeper: Wait-free Coordination for Internet-scale Systems. 2010 USENIX
+   Annual Technical Conference (USENIX ATC 10). Boston, 2010. URL:
+   <https://www.usenix.org/conference/usenix-atc-10/zookeeper-wait-free-coordination-internet-scale-systems> (дата
+   звернення: 20.10.2026).
+5. Ongaro D., Ousterhout J. In Search of an Understandable Consensus Algorithm. 2014 USENIX Annual Technical Conference
+   (USENIX ATC 14). Philadelphia, 2014. P. 305–319. URL:
+   <https://www.usenix.org/conference/atc14/technical-sessions/presentation/ongaro> (дата звернення: 20.10.2026).
+6. Ongaro D. Consensus: Bridging Theory and Practice : PhD dissertation. Stanford University, 2014. URL:
+   <https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf> (дата звернення: 20.10.2026).
+7. Herlihy M. P., Wing J. M. Linearizability: a correctness condition for concurrent objects. ACM Transactions on
+   Programming Languages and Systems. 1990. Vol. 12, no. 3. P. 463–492. DOI: 10.1145/78969.78972.
+8. Gray C., Cheriton D. Leases: an efficient fault-tolerant mechanism for distributed file cache consistency.
+   Proceedings of the 12th ACM Symposium on Operating Systems Principles (SOSP '89). 1989. P. 202–210. DOI:
+   10.1145/74850.74870.
+9. Burrows M. The Chubby lock service for loosely-coupled distributed systems. 7th USENIX Symposium on Operating Systems
+   Design and Implementation (OSDI 06). Seattle, 2006. URL:
+   <https://www.usenix.org/conference/osdi-06/chubby-lock-service-loosely-coupled-distributed-systems> (дата звернення:
+   20.10.2026).
+10. Redis Pub/sub. Redis Documentation. URL: <https://redis.io/docs/latest/develop/pubsub/> (дата звернення:
+    20.10.2026).
+11. Log-Shipping Standby Servers. PostgreSQL Documentation. URL:
+    <https://www.postgresql.org/docs/current/warm-standby.html> (дата звернення: 20.10.2026).
+12. Karger D., Lehman E., Leighton T. et al. Consistent hashing and random trees: distributed caching protocols for
+    relieving hot spots on the World Wide Web. Proceedings of the 29th Annual ACM Symposium on Theory of Computing (STOC
+    '97). 1997. P. 654–663. DOI: 10.1145/258533.258660.
+13. ZooKeeper: Because Coordinating Distributed Systems is a Zoo. Apache ZooKeeper. URL:
+    <https://zookeeper.apache.org/doc/current/zookeeperOver.html> (дата звернення: 20.10.2026).
+14. ZooKeeper Administrator's Guide. Apache ZooKeeper. URL:
+    <https://zookeeper.apache.org/doc/current/zookeeperAdmin.html> (дата звернення: 20.10.2026).
+15. ZooKeeper Programmer's Guide. Apache ZooKeeper. URL:
+    <https://zookeeper.apache.org/doc/current/zookeeperProgrammers.html> (дата звернення: 20.10.2026).
+16. Shared Reentrant Lock. Apache Curator. URL: <https://curator.apache.org/docs/recipes-shared-reentrant-lock/> (дата
+    звернення: 20.10.2026).
+17. etcd3 API. etcd Documentation v3.5. URL: <https://etcd.io/docs/v3.5/learning/api/> (дата звернення: 20.10.2026).
+18. Performance. etcd Documentation v3.5. URL: <https://etcd.io/docs/v3.5/op-guide/performance/> (дата звернення:
+    20.10.2026).
+19. bbolt: An embedded key/value database for Go. GitHub, etcd-io. URL: <https://github.com/etcd-io/bbolt> (дата
+    звернення: 20.10.2026).
+20. KV API guarantees. etcd Documentation v3.5. URL: <https://etcd.io/docs/v3.5/learning/api_guarantees/> (дата
+    звернення: 20.10.2026).
+21. System limits. etcd Documentation v3.5. URL: <https://etcd.io/docs/v3.5/dev-guide/limit/> (дата звернення:
+    20.10.2026).
+22. Maintenance. etcd Documentation v3.5. URL: <https://etcd.io/docs/v3.5/op-guide/maintenance/> (дата звернення:
+    20.10.2026).
+23. Data Partitioning and Replication. Hazelcast Platform 5.5 Documentation. URL:
+    <https://docs.hazelcast.com/hazelcast/5.5/architecture/data-partitioning> (дата звернення: 20.10.2026).
+24. CP Subsystem. Hazelcast Platform 5.5 Documentation. URL:
+    <https://docs.hazelcast.com/hazelcast/5.5/cp-subsystem/cp-subsystem> (дата звернення: 20.10.2026).
+25. FencedLock. Hazelcast Platform 5.5 Documentation. URL:
+    <https://docs.hazelcast.com/hazelcast/5.5/data-structures/fencedlock> (дата звернення: 20.10.2026).
+26. Configuring the CP Subsystem. Hazelcast Platform 5.5 Documentation. URL:
+    <https://docs.hazelcast.com/hazelcast/5.5/cp-subsystem/configuration> (дата звернення: 20.10.2026).
+27. Krawczyk H., Bellare M., Canetti R. HMAC: Keyed-Hashing for Message Authentication : RFC 2104. IETF, 1997. URL:
+    <https://www.rfc-editor.org/rfc/rfc2104> (дата звернення: 20.10.2026).
+28. A08:2021 – Software and Data Integrity Failures. OWASP Top 10:2021. URL:
+    <https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/> (дата звернення: 20.10.2026).
+29. Regulation (EU) 2016/679 of the European Parliament and of the Council of 27 April 2016 (General Data Protection
+    Regulation). EUR-Lex. URL: <https://eur-lex.europa.eu/eli/reg/2016/679/oj> (дата звернення: 20.10.2026).

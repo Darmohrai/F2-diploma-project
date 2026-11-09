@@ -25,7 +25,7 @@ below was read from the jars of these versions (`jar tf`, `javap`), not from mem
 ## Verification
 
 | What | How |
-|---|---|
+| --- | --- |
 | Source compatibility of the starters with Spring Boot 4 | `./mvnw -Pboot4 clean install` compiles the starters against 4.1.1 and runs their tests on it |
 | Binary compatibility: jars built on 3.2 running on 4 | default build: `kurin-actuator-boot4` and `kurin-it-boot4` import the 4.1.1 BOM and use the starter jars compiled against 3.2.12 |
 | Binary compatibility the other way | `-Pboot4`: `kurin-actuator-boot3` and `kurin-it-boot3` keep 3.2.12 and use starter jars compiled against 4.1.1 |
@@ -38,7 +38,7 @@ below was read from the jars of these versions (`jar tf`, `javap`), not from mem
 ### Spring Boot classes
 
 | Class (Spring Boot 3.2 name) | Used by | Spring Boot 4.1 | Handling |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `o.s.b.autoconfigure.AutoConfiguration` | all starters, adapters | same (`spring-boot-autoconfigure`) | - |
 | `o.s.b.autoconfigure.condition.ConditionalOnBean`, `ConditionalOnClass`, `ConditionalOnMissingBean`, `ConditionalOnProperty`, `ConditionalOnWebApplication` | all starters, adapters | same | - |
 | `o.s.b.context.properties.ConfigurationProperties`, `EnableConfigurationProperties` | all starters | same (`spring-boot`) | - |
@@ -62,7 +62,7 @@ below was read from the jars of these versions (`jar tf`, `javap`), not from mem
 ### Dependencies
 
 | Spring Boot 3.2 | Spring Boot 4.1 | Handling |
-|---|---|---|
+| --- | --- | --- |
 | `spring-boot-starter-aop` | renamed `spring-boot-starter-aspectj` | starters depend on `spring-aop` + `aspectjweaver` |
 | `spring-boot-starter-web` | `spring-boot-starter-webmvc` (the old name remains as a deprecated alias) | only in the integration test modules, each uses its own |
 | `spring-boot-actuator-autoconfigure` holds the health conditions | health is in `spring-boot-health` | adapter poms |
@@ -79,7 +79,7 @@ below was read from the jars of these versions (`jar tf`, `javap`), not from mem
 All present with the same names and the used signatures in 6.1 and 7.0.9:
 
 | Area | Classes | Used by |
-|---|---|---|
+| --- | --- | --- |
 | Beans, context | `BeanPostProcessor`, `BeanFactoryAware`, `ObjectProvider`, `InitializingBean`, `SmartLifecycle`, `ApplicationEventPublisher`, `ApplicationEvent`, `SmartApplicationListener`, `@Bean`, `@Configuration`, `@Primary`, `@EnableAspectJAutoProxy` | all starters |
 | AOP | `AopUtils`, `AopProxyUtils`; AspectJ `@Aspect`, `@Around`, `ProceedingJoinPoint`, `MethodSignature` | all starters |
 | Core | `AnnotatedElementUtils`, `Ordered`, `@Order`, `DefaultParameterNameDiscoverer`, `ReflectionUtils`, `ClassUtils`, `DataSize` | all starters |
@@ -95,7 +95,7 @@ Spring at all.
 ## Which adapter to add
 
 | Application runs on | Add |
-|---|---|
+| --- | --- |
 | Spring Boot 3.2 - 3.5 | `kurin-actuator-boot3` |
 | Spring Boot 4.x | `kurin-actuator-boot4` |
 | no Actuator | neither; metrics and `/actuator/kurin` do not need them, only the health indicators do |

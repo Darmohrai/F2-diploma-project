@@ -10,7 +10,14 @@ info:
     Spring Security (OAuth2 resource server) or the API gateway and require a JWT with the scope
     `kurin.monitor`. Prometheus scrapes `/actuator/prometheus` on the internal management network.
 
-    Requirements: SRS-FUN-33 (health and /actuator/kurin), SRS-NFR-OBS-01.
+    Requirements: SRS-FUN-32 (metrics), SRS-FUN-33 (health and /actuator/kurin), SRS-NFR-OBS-01.
+
+    The header X-Kurin-Consistency is not part of the management API: it travels with every business request of
+    the application. Its format is defined here once, in components.headers.XKurinConsistency and
+    components.parameters.XKurinConsistency, so that application APIs can reference it (SRS-FUN-26, SRS-FUN-27).
+
+    CORS is not enabled on the management port: the endpoints serve no browser clients. No sensitive value is
+    passed in a URL; the only path parameter is the enumerated component name.
   contact:
     name: Darmohrai V.
     url: https://github.com/Darmohrai/KurinFrame
@@ -32,6 +39,8 @@ tags:
     description: State of the embedded Raft node and of the Kurin modules
   - name: health
     description: Health verdicts used by load balancers and orchestrators
+  - name: metrics
+    description: Metrics scraped by Prometheus
 paths:
   /kurin:
     get:
@@ -124,6 +133,36 @@ paths:
                   nodeId: app-2:7000
                   role: FOLLOWER
                   storageFailure: 'java.io.IOException: No space left on device'
+  /prometheus:
+    get:
+      tags: [metrics]
+      operationId: getPrometheusMetrics
+      summary: Metrics of the instance in the Prometheus text format, kurin.* meters included
+      description: |
+        Scraped by Prometheus every 15 s on the internal management network. Prometheus sends the bearer token
+        from authorization.credentials_file. The response has no pagination: its size is bounded by the number
+        of meters, whose tags never contain unbounded values such as lock keys.
+      responses:
+        '200':
+          description: Current values of all meters
+          content:
+            text/plain; version=0.0.4:
+              schema:
+                type: string
+                maxLength: 10485760
+              example: |
+                # TYPE kurin_raft_commit_index gauge
+                kurin_raft_commit_index 18234.0
+                # TYPE kurin_locks_acquire_total counter
+                kurin_locks_acquire_total{result="acquired"} 412.0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotExposed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 components:
   securitySchemes:
     bearerAuth:
@@ -131,6 +170,19 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token issued by the identity provider of the application; scope `kurin.monitor` required.
+  parameters:
+    XKurinConsistency:
+      name: X-Kurin-Consistency
+      in: header
+      required: false
+      description: Consistency token of the client, as returned by the previous response. A token with an invalid signature is ignored.
+      schema:
+        $ref: '#/components/schemas/ConsistencyToken'
+  headers:
+    XKurinConsistency:
+      description: New consistency token after a write; the client sends it back with its next request.
+      schema:
+        $ref: '#/components/schemas/ConsistencyToken'
   responses:
     Unauthorized:
       description: No token, an expired token or a token with an invalid signature
@@ -295,3 +347,11 @@ components:
         details:
           type: object
           additionalProperties: true
+    ConsistencyToken:
+      type: string
+      description: |
+        base64url (no padding) of `shard=position;...`, followed by `.` and the hex HMAC-SHA256 of that text
+        when kurin.routing.token-secret is set. Holds no user data. About 40 bytes per shard.
+      pattern: '^[A-Za-z0-9_-]*(\.[0-9a-f]{64})?$'
+      maxLength: 8192
+      example: c2hhcmQtMD0xNzk0MjM0NzI4Nzc2.4f2a9c0e1b7d3a5f6e8c9b0a1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e

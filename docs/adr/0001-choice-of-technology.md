@@ -7,7 +7,7 @@
 | Автор | Дармограй В. |
 | Шаблон | Michael Nygard, «Documenting Architecture Decisions» (2011) |
 | Пов'язані вимоги | [SRS-NFR-PERF-01](../srs.md#srs-nfr-perf-01), [SRS-NFR-PERF-02](../srs.md#srs-nfr-perf-02), [SRS-NFR-SEC-01](../srs.md#srs-nfr-sec-01), [SRS-NFR-SEC-02](../srs.md#srs-nfr-sec-02), [SRS-NFR-INF-01](../srs.md#srs-nfr-inf-01), [SRS-FUN-11](../srs.md#srs-fun-11), [SRS-CON-01](../srs.md#srs-con-01) |
-| Де застосовано | контейнер Application Instance, компоненти Transport і Serialization ([2_design.md](../2_design.md#22-компонентне-моделювання-критичного-сервісу-c4-level-3)) |
+| Де застосовано | контейнер Application Instance, компоненти Transport і Serialization ([2_design.md](../2_design.md#23-компонентне-моделювання-та-опис-серверного-ядра-c4-level-3)) |
 
 ## Context
 
