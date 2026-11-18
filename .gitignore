@@ -39,3 +39,9 @@ Thumbs.db
 raft-data-*/
 kurin-data/
 stability-failures/
+
+# Secrets: never commit (2.4, З10)
+.env
+.env.*
+*.p12
+*.jks

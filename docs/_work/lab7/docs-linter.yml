@@ -1,0 +1,42 @@
+# Docs Quality Gate: Markdown of the thesis (docs/) must pass markdownlint before a Pull Request reaches master.
+name: docs-linter
+
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'docs/**'
+      - '.markdownlint.jsonc'
+      - '.markdownlint-cli2.jsonc'
+      - '.github/workflows/docs-linter.yml'
+  push:
+    branches: [master, main]
+    paths:
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-linter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdownlint:
+    name: markdownlint (docs/)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The version is pinned so that a new release of the linter with new rules cannot turn a green PR red.
+      # Files and ignores come from .markdownlint-cli2.jsonc, rules from .markdownlint.jsonc.
+      - name: Lint Markdown in docs/
+        run: npx --yes markdownlint-cli2@0.23.2

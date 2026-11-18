@@ -1,0 +1,22 @@
+// Docs Quality Gate: rules for the thesis text in docs/ (markdownlint, https://github.com/DavidAnson/markdownlint)
+{
+  "default": true,
+  // Headings: ATX style (# ##), one H1 per file, no skipped levels (MD001 is on by default)
+  "MD003": { "style": "atx" },
+  "MD025": { "level": 1, "front_matter_title": "" },
+  "MD024": { "siblings_only": true },
+  // Line length for prose; tables and code cannot be wrapped
+  "MD013": { "line_length": 120, "tables": false, "code_blocks": false, "headings": false },
+  // Lists: dashes, consistent indentation
+  "MD004": { "style": "dash" },
+  "MD007": { "indent": 2 },
+  // Every fenced block names its language (mermaid, yaml, protobuf, bash ...)
+  "MD040": true,
+  "MD046": { "style": "fenced" },
+  // HTML only for anchors and line breaks inside table cells and diagrams
+  "MD033": { "allowed_elements": ["a", "br", "b"] },
+  // Emphasis is not a heading; bold labels of tables end with no colon
+  "MD036": false,
+  // Tables: leading and trailing pipes
+  "MD055": { "style": "leading_and_trailing" }
+}
