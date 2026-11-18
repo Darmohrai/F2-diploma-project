@@ -10,7 +10,8 @@ Lab 7: chapter 2 of the thesis consolidated into its final structure, with a Doc
   mandatory production profile (TLS, cluster secret, token secret are off by default); known limitations.
 - §2.5.3–2.5.4 – route map (7 RPCs, 3 HTTP routes, 1 cross-cutting header) checked field by field against the
   contracts; data flows with size limits, timeouts and unknown-outcome handling.
-- §2.6 – use case model (StarUML) and specifications UC-01 (distributed lock with fencing) and UC-02 (tiered cache):
+- §2.6 – use case model (StarUML: `docs/uml/kurin-use-cases.mdj`, exported to `kurin-use-cases.png`; 9 actors,
+  22 use cases, 9 «include», 6 «extend» with extension points and conditions) and specifications UC-01 (distributed lock with fencing) and UC-02 (tiered cache):
   preconditions, happy path at the level of server calls, postconditions, alternative and exception flows.
 - §2.8.3–2.8.4 and chapter conclusions. Sections renumbered to 2.1–2.8; all anchors updated.
 
@@ -33,4 +34,4 @@ Not to be merged before the instructor's review.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-https://claude.ai/code/session_012W6Ebm73w4WxHvdoqfmLn2
+https://claude.ai/code/session_012W6EbmSR1JxE8jvcTrwTWY
